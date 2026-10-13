@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mdshare</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0 auto; max-width: 46rem; padding: 1.5rem; line-height: 1.6; }
+  a { color: inherit; }
+  li { margin: .25rem 0; }
+  pre { white-space: pre-wrap; word-wrap: break-word; font: .95rem/1.6 ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h2 id="title">mdshare</h2>
+<ul id="list"></ul>
+<pre id="doc"></pre>
+<script>
+  history.replaceState(null, "", location.pathname + location.hash);
+  const list = document.getElementById("list"), doc = document.getElementById("doc");
+  function walk(node, out) {
+    if (node.kind === "dir") node.children.forEach(c => walk(c, out));
+    else if (node.markdown) out.push(node.path);
+    return out;
+  }
+  async function open(path) {
+    const res = await fetch("/api/file?path=" + encodeURIComponent(path));
+    doc.textContent = await res.text();
+    location.hash = encodeURIComponent(path);
+  }
+  fetch("/api/tree").then(r => r.json()).then(tree => {
+    document.getElementById("title").textContent = tree.name;
+    for (const path of walk(tree, [])) {
+      const li = document.createElement("li"), a = document.createElement("a");
+      a.href = "#" + encodeURIComponent(path);
+      a.textContent = path;
+      a.onclick = e => { e.preventDefault(); open(path); };
+      li.append(a); list.append(li);
+    }
+    if (location.hash) open(decodeURIComponent(location.hash.slice(1)));
+  });
+</script>
+</body>
+</html>
