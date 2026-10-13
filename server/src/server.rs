@@ -18,6 +18,9 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 
+use rand::RngExt;
+
+use crate::devices::{Registry, random_string};
 use crate::net::Addr;
 use crate::share::{Share, ShareKind};
 
@@ -36,13 +39,20 @@ pub struct ChangeEvent {
 
 pub struct AppState {
     pub share: Share,
-    pub token: String,
+    pub devices: Registry,
+    pub server_id: String,
+    /// Token for this session only, used by the browser link.
+    pub session_token: String,
+    /// Long secret carried by the QR code; pairs a phone without a code.
+    pub pair_secret: String,
+    /// 6-digit code for phones that found the laptop under Nearby.
     pub pair_code: String,
     pub hostname: String,
     pub port: u16,
     pub addrs: Vec<Addr>,
     pub expires_at: Option<u64>,
     pub events: broadcast::Sender<ChangeEvent>,
+    pub pairing: bool,
     pair_failures: AtomicU32,
     /// Unix seconds of the last authenticated request.
     pub last_activity: AtomicU64,
@@ -50,31 +60,40 @@ pub struct AppState {
     pub live_streams: AtomicUsize,
 }
 
+pub struct Session {
+    pub share: Share,
+    pub devices: Registry,
+    pub hostname: String,
+    pub port: u16,
+    pub addrs: Vec<Addr>,
+    pub expires_at: Option<u64>,
+    /// Whether new phones may pair during this session.
+    pub pairing: bool,
+}
+
 impl AppState {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        share: Share,
-        token: String,
-        pair_code: String,
-        hostname: String,
-        port: u16,
-        addrs: Vec<Addr>,
-        expires_at: Option<u64>,
-        events: broadcast::Sender<ChangeEvent>,
-    ) -> Self {
+    pub fn new(session: Session, events: broadcast::Sender<ChangeEvent>) -> Self {
         Self {
-            share,
-            token,
-            pair_code,
-            hostname,
-            port,
-            addrs,
-            expires_at,
+            server_id: session.devices.server_id(),
+            share: session.share,
+            devices: session.devices,
+            session_token: random_string(24),
+            pair_secret: random_string(24),
+            pair_code: format!("{:06}", rand::rng().random_range(0..1_000_000u32)),
+            hostname: session.hostname,
+            port: session.port,
+            addrs: session.addrs,
+            expires_at: session.expires_at,
+            pairing: session.pairing,
             events,
             pair_failures: AtomicU32::new(0),
             last_activity: AtomicU64::new(now_secs()),
             live_streams: AtomicUsize::new(0),
         }
+    }
+
+    fn authorized(&self, token: &str) -> bool {
+        same(token, &self.session_token) || self.devices.authorize(token).is_some()
     }
 }
 
@@ -136,8 +155,7 @@ fn presented_token<'a>(headers: &'a HeaderMap, query: Option<&'a str>) -> Option
 }
 
 async fn require_token(State(state): State<AppRef>, req: Request, next: Next) -> Response {
-    let ok =
-        presented_token(req.headers(), req.uri().query()).is_some_and(|t| same(t, &state.token));
+    let ok = presented_token(req.headers(), req.uri().query()).is_some_and(|t| state.authorized(t));
     if !ok {
         return (
             StatusCode::UNAUTHORIZED,
@@ -153,6 +171,9 @@ async fn require_token(State(state): State<AppRef>, req: Request, next: Next) ->
 struct Ping<'a> {
     app: &'static str,
     version: u32,
+    /// Permanent id of this laptop, so the app can tell it's the one it paired
+    /// with even after its IP address changed.
+    server_id: &'a str,
     name: &'a str,
     host: &'a str,
 }
@@ -162,6 +183,7 @@ async fn ping(State(state): State<AppRef>) -> impl IntoResponse {
     Json(Ping {
         app: "mdshare",
         version: API_VERSION,
+        server_id: &state.server_id,
         name: &state.share.name,
         host: &state.hostname,
     })
@@ -170,27 +192,73 @@ async fn ping(State(state): State<AppRef>) -> impl IntoResponse {
 
 #[derive(Deserialize)]
 struct PairRequest {
-    code: String,
+    /// The secret from the QR code...
+    secret: Option<String>,
+    /// ...or the 6-digit code shown in the terminal.
+    code: Option<String>,
+    /// Shown by `mdshare devices`, e.g. "Pixel 9".
+    device_name: Option<String>,
 }
 
-/// Exchanges the 6-digit code shown in the terminal for the token, so a phone
-/// that found the share over mDNS can connect without scanning the QR code.
+#[derive(Serialize)]
+struct PairResponse<'a> {
+    token: String,
+    device_id: String,
+    server_id: &'a str,
+    host: &'a str,
+    port: u16,
+    addrs: &'a [Addr],
+}
+
+/// One-time pairing: trades the QR secret or the 6-digit code for a token
+/// that belongs to this phone and keeps working for every later share.
 async fn pair(State(state): State<AppRef>, Json(req): Json<PairRequest>) -> Response {
-    if state.pair_failures.load(Ordering::Relaxed) >= MAX_PAIR_FAILURES {
+    if !state.pairing {
         return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({ "error": "pairing locked; scan the QR code instead" })),
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "Pairing is off for this share." })),
         )
             .into_response();
     }
-    if same(req.code.trim(), &state.pair_code) {
-        return Json(serde_json::json!({ "token": state.token })).into_response();
+    if state.pair_failures.load(Ordering::Relaxed) >= MAX_PAIR_FAILURES {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "Too many wrong codes. Restart mdshare or scan the QR code." })),
+        )
+            .into_response();
+    }
+    let by_secret = req
+        .secret
+        .as_deref()
+        .is_some_and(|s| same(s.trim(), &state.pair_secret));
+    let by_code = req
+        .code
+        .as_deref()
+        .map(|c| {
+            c.chars()
+                .filter(|c| !c.is_whitespace() && *c != '-')
+                .collect::<String>()
+        })
+        .is_some_and(|c| same(&c, &state.pair_code));
+    if by_secret || by_code {
+        let name = req.device_name.as_deref().unwrap_or("Phone");
+        let (device_id, token) = state.devices.pair(name);
+        println!("  Paired      {name} ({device_id})");
+        return Json(PairResponse {
+            token,
+            device_id,
+            server_id: &state.server_id,
+            host: &state.hostname,
+            port: state.port,
+            addrs: &state.addrs,
+        })
+        .into_response();
     }
     state.pair_failures.fetch_add(1, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_millis(400)).await;
     (
         StatusCode::FORBIDDEN,
-        Json(serde_json::json!({ "error": "wrong code" })),
+        Json(serde_json::json!({ "error": "Wrong code" })),
     )
         .into_response()
 }
@@ -199,6 +267,7 @@ async fn pair(State(state): State<AppRef>, Json(req): Json<PairRequest>) -> Resp
 struct Info<'a> {
     app: &'static str,
     version: u32,
+    server_id: &'a str,
     name: &'a str,
     kind: ShareKind,
     /// For a single-file share, the path of that file.
@@ -213,6 +282,7 @@ async fn info(State(state): State<AppRef>) -> impl IntoResponse {
     Json(Info {
         app: "mdshare",
         version: API_VERSION,
+        server_id: &state.server_id,
         name: &state.share.name,
         kind: state.share.kind,
         entry: state.share.entry.as_deref(),
@@ -371,7 +441,7 @@ async fn events(State(state): State<AppRef>) -> Sse<impl Stream<Item = Result<Ev
 /// Minimal browser fallback: sets the auth cookie and shows the file list.
 async fn index(State(state): State<AppRef>, req: Request) -> Response {
     let headers = req.headers();
-    let Some(t) = presented_token(headers, req.uri().query()).filter(|t| same(t, &state.token))
+    let Some(t) = presented_token(headers, req.uri().query()).filter(|t| state.authorized(t))
     else {
         return (
             StatusCode::UNAUTHORIZED,

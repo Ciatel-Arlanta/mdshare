@@ -1,4 +1,5 @@
 mod awake;
+mod devices;
 mod mdns;
 mod net;
 mod server;
@@ -12,15 +13,15 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use qrcode::QrCode;
 use qrcode::render::unicode::Dense1x2;
-use rand::RngExt;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 
+use crate::devices::Registry;
 use crate::net::AddrKind;
-use crate::server::{AppState, now_secs};
+use crate::server::{AppState, Session, now_secs};
 use crate::share::{Share, ShareKind};
 
 const DEFAULT_PORT: u16 = 7878;
@@ -28,10 +29,19 @@ const DEFAULT_PORT: u16 = 7878;
 /// Share a markdown file or folder with the mdshare app, read-only, until you
 /// press Ctrl+C.
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// The .md file or folder to share.
-    path: PathBuf,
+    #[arg(required = true)]
+    path: Option<PathBuf>,
 
     /// Stop sharing after this long, e.g. `90m` or `4h`.
     #[arg(long = "for", value_name = "DURATION", value_parser = humantime::parse_duration)]
@@ -57,59 +67,24 @@ struct Cli {
     #[arg(long)]
     no_mdns: bool,
 
-    /// Use a one-off token for this session instead of this laptop's saved one.
-    /// Phones paired before won't connect.
-    #[arg(long, conflicts_with = "new_token")]
-    ephemeral: bool,
-
-    /// Replace this laptop's saved token, un-pairing every phone.
+    /// Only let already-paired phones in; no QR code or pair code this time.
     #[arg(long)]
-    new_token: bool,
+    no_pair: bool,
 }
 
-fn random_string(len: usize) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
-    let mut rng = rand::rng();
-    (0..len)
-        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
-        .collect()
-}
-
-fn config_dir() -> Option<PathBuf> {
-    if cfg!(windows) {
-        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("mdshare"))
-    } else if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        Some(PathBuf::from(xdg).join("mdshare"))
-    } else {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config").join("mdshare"))
-    }
-}
-
-/// The laptop's saved token, so paired phones keep working across shares.
-fn load_token(cli: &Cli) -> String {
-    if cli.ephemeral {
-        return random_string(24);
-    }
-    let Some(dir) = config_dir() else {
-        return random_string(24);
-    };
-    let file = dir.join("token");
-    if !cli.new_token
-        && let Ok(saved) = std::fs::read_to_string(&file)
-    {
-        let saved = saved.trim();
-        if saved.len() >= 20 && saved.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return saved.to_string();
-        }
-    }
-    let token = random_string(24);
-    if std::fs::create_dir_all(&dir)
-        .and_then(|_| std::fs::write(&file, &token))
-        .is_err()
-    {
-        eprintln!("warning: couldn't save the token to {}", file.display());
-    }
-    token
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// List the phones paired with this laptop.
+    Devices,
+    /// Un-pair a phone so it can no longer connect.
+    Unpair {
+        /// Device id (or the start of it) from `mdshare devices`.
+        #[arg(required_unless_present = "all")]
+        id: Option<String>,
+        /// Un-pair every phone.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 async fn bind(port: Option<u16>) -> anyhow::Result<TcpListener> {
@@ -130,13 +105,12 @@ async fn bind(port: Option<u16>) -> anyhow::Result<TcpListener> {
     ))
 }
 
-fn share_link(hosts: &[String], port: u16, token: &str) -> String {
-    let mut link = format!("mdshare://{}:{port}/?t={token}", hosts[0]);
-    if hosts.len() > 1 {
-        link.push_str("&alt=");
-        link.push_str(&hosts[1..].join(","));
-    }
-    link
+/// What the QR code carries: everything a phone needs to pair once.
+fn pair_link(server_id: &str, secret: &str, hosts: &[String], port: u16) -> String {
+    format!(
+        "mdshare://pair?id={server_id}&s={secret}&p={port}&h={}",
+        hosts.join(",")
+    )
 }
 
 fn print_qr(data: &str) {
@@ -166,12 +140,51 @@ fn human(d: Duration) -> String {
     }
 }
 
+fn ago(secs: u64) -> String {
+    let d = now_secs().saturating_sub(secs);
+    match d {
+        0..60 => "just now".into(),
+        60..3600 => format!("{}m ago", d / 60),
+        3600..86400 => format!("{}h ago", d / 3600),
+        _ => format!("{}d ago", d / 86400),
+    }
+}
+
+fn run_command(cmd: Command) {
+    let reg = Registry::load();
+    match cmd {
+        Command::Devices => {
+            let list = reg.list();
+            if list.is_empty() {
+                println!("No phones paired yet. Run `mdshare <path>` and scan the QR code.");
+            }
+            for d in list {
+                println!(
+                    "{}  {:<24} paired {}, last seen {}",
+                    d.id,
+                    d.name,
+                    ago(d.paired_at),
+                    ago(d.last_seen)
+                );
+            }
+        }
+        Command::Unpair { id, all } => {
+            let n = reg.remove(if all { None } else { id.as_deref() });
+            println!("Un-paired {n} phone{}.", if n == 1 { "" } else { "s" });
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let share = Share::open(&cli.path, cli.name.clone())?;
-    let token = load_token(&cli);
-    let pair_code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
+    if let Some(cmd) = cli.command {
+        run_command(cmd);
+        return Ok(());
+    }
+    let path = cli.path.as_deref().expect("required by clap");
+    let share = Share::open(path, cli.name.clone())?;
+    let devices = Registry::load();
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "laptop".into());
@@ -182,27 +195,27 @@ async fn main() -> anyhow::Result<()> {
     let addrs = net::local_addrs();
     let magicdns = magicdns.await.ok().flatten();
 
-    let mut hosts: Vec<String> = addrs.iter().map(|a| a.host.clone()).collect();
-    hosts.extend(magicdns.clone());
-    if hosts.is_empty() {
-        hosts.push("127.0.0.1".into());
-    }
-
-    let expires_at = cli.duration.map(|d| now_secs() + d.as_secs());
-    let (events_tx, _) = broadcast::channel(64);
     let mut all_addrs = addrs.clone();
     all_addrs.extend(magicdns.iter().map(|h| net::Addr {
         host: h.clone(),
         kind: AddrKind::Tailscale,
     }));
+    let mut hosts: Vec<String> = all_addrs.iter().map(|a| a.host.clone()).collect();
+    if hosts.is_empty() {
+        hosts.push("127.0.0.1".into());
+    }
+
+    let (events_tx, _) = broadcast::channel(64);
     let state = Arc::new(AppState::new(
-        share,
-        token.clone(),
-        pair_code.clone(),
-        hostname.clone(),
-        port,
-        all_addrs,
-        expires_at,
+        Session {
+            share,
+            devices,
+            hostname: hostname.clone(),
+            port,
+            addrs: all_addrs,
+            expires_at: cli.duration.map(|d| now_secs() + d.as_secs()),
+            pairing: !cli.no_pair,
+        },
         events_tx.clone(),
     ));
 
@@ -216,10 +229,10 @@ async fn main() -> anyhow::Result<()> {
     let _advert = if cli.no_mdns {
         None
     } else {
-        match mdns::advertise(&state.share.name, state.share.kind, &hostname, &addrs, port) {
+        match mdns::advertise(&state, &addrs) {
             Ok(a) => Some(a),
             Err(e) => {
-                eprintln!("warning: not visible in Nearby ({e}); scan the QR code instead");
+                eprintln!("warning: not visible on Wi-Fi ({e}); use the QR code instead");
                 None
             }
         }
@@ -242,26 +255,44 @@ async fn main() -> anyhow::Result<()> {
             format!("folder, {n} markdown file{}", if n == 1 { "" } else { "s" })
         }
     };
+    let paired = state.devices.list().len();
     println!();
     println!("  mdshare  sharing \"{}\" ({what})", state.share.name);
     println!();
-    print_qr(&share_link(&hosts, port, &token));
-    println!();
-    println!("  Scan the QR code in the mdshare app, or pick this laptop under Nearby");
-    println!("  and enter the pair code.");
-    println!();
-    println!("  Pair code   {} {}", &pair_code[..3], &pair_code[3..]);
-    for a in &addrs {
-        let label = match a.kind {
-            AddrKind::Lan => "Wi-Fi/LAN",
-            AddrKind::Tailscale => "Tailscale",
+    if cli.no_pair {
+        println!("  Pairing is off; only phones paired before can connect.");
+    } else {
+        print_qr(&pair_link(
+            &state.server_id,
+            &state.pair_secret,
+            &hosts,
+            port,
+        ));
+        println!();
+        println!("  New phone? Scan the QR code in the mdshare app, or pick this laptop");
+        println!("  under Nearby and type the pair code. You only pair once.");
+        println!();
+        let code = &state.pair_code;
+        println!("  Pair code   {} {}", &code[..3], &code[3..]);
+    }
+    if paired > 0 {
+        println!(
+            "  Paired      {paired} phone{} (they connect automatically)",
+            if paired == 1 { "" } else { "s" }
+        );
+    }
+    for a in &state.addrs {
+        let label = match (&a.kind, a.host.parse::<std::net::Ipv4Addr>().is_ok()) {
+            (AddrKind::Lan, _) => "Wi-Fi/LAN",
+            (AddrKind::Tailscale, true) => "Tailscale",
+            (AddrKind::Tailscale, false) => "MagicDNS",
         };
         println!("  {label:<11} {}:{port}", a.host);
     }
-    if let Some(name) = &magicdns {
-        println!("  {:<11} {name}:{port}", "MagicDNS");
-    }
-    println!("  Browser     http://{}:{port}/?t={token}", hosts[0]);
+    println!(
+        "  Browser     http://{}:{port}/?t={}",
+        hosts[0], state.session_token
+    );
     let mut stops = vec!["Ctrl+C".to_string()];
     if let Some(d) = cli.duration {
         stops.push(format!("after {}", human(d)));
@@ -305,6 +336,8 @@ async fn main() -> anyhow::Result<()> {
         _ = deadline => "time's up",
         _ = idle => "idle",
     };
+    // Persist last-seen times.
+    state.devices.save();
     println!("  {reason}; no longer sharing.");
     Ok(())
 }
@@ -321,12 +354,8 @@ mod tests {
             "lap.ts.net".into(),
         ];
         assert_eq!(
-            share_link(&hosts, 7878, "tok"),
-            "mdshare://192.168.1.5:7878/?t=tok&alt=100.64.1.2,lap.ts.net"
-        );
-        assert_eq!(
-            share_link(&hosts[..1], 1, "x"),
-            "mdshare://192.168.1.5:1/?t=x"
+            pair_link("SID", "sec", &hosts, 7878),
+            "mdshare://pair?id=SID&s=sec&p=7878&h=192.168.1.5,100.64.1.2,lap.ts.net"
         );
     }
 
@@ -335,5 +364,16 @@ mod tests {
         assert_eq!(human(Duration::from_secs(4 * 3600)), "4h");
         assert_eq!(human(Duration::from_secs(90 * 60)), "1h 30m");
         assert_eq!(human(Duration::from_secs(300)), "5m");
+    }
+
+    #[test]
+    fn cli_parses() {
+        let devices = Cli::try_parse_from(["mdshare", "devices"]).unwrap();
+        assert!(matches!(devices.command, Some(Command::Devices)));
+        let c = Cli::try_parse_from(["mdshare", "docs", "--for", "4h"]).unwrap();
+        assert_eq!(c.path.unwrap(), PathBuf::from("docs"));
+        assert!(Cli::try_parse_from(["mdshare"]).is_err());
+        assert!(Cli::try_parse_from(["mdshare", "unpair"]).is_err());
+        assert!(Cli::try_parse_from(["mdshare", "unpair", "--all"]).is_ok());
     }
 }

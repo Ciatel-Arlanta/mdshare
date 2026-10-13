@@ -4,7 +4,7 @@
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 
 use crate::net::{Addr, AddrKind};
-use crate::server::API_VERSION;
+use crate::server::{API_VERSION, AppState};
 use crate::share::ShareKind;
 
 pub const SERVICE_TYPE: &str = "_mdshare._tcp.local.";
@@ -14,13 +14,8 @@ pub struct Advert {
     fullname: String,
 }
 
-pub fn advertise(
-    share_name: &str,
-    kind: ShareKind,
-    hostname: &str,
-    addrs: &[Addr],
-    port: u16,
-) -> anyhow::Result<Advert> {
+pub fn advertise(state: &AppState, addrs: &[Addr]) -> anyhow::Result<Advert> {
+    let (share_name, hostname, port) = (&state.share.name, &state.hostname, state.port);
     let ips: Vec<&str> = addrs
         .iter()
         .filter(|a| a.kind == AddrKind::Lan)
@@ -30,15 +25,17 @@ pub fn advertise(
 
     let daemon = ServiceDaemon::new()?;
     let instance = truncate(&format!("{share_name} on {hostname}"), 63);
-    let kind = match kind {
+    let kind = match state.share.kind {
         ShareKind::File => "file",
         ShareKind::Folder => "folder",
     };
     let version = API_VERSION.to_string();
     let props = [
         ("v", version.as_str()),
-        ("name", share_name),
-        ("host", hostname),
+        // Lets a paired phone recognise this laptop whatever its IP is today.
+        ("id", state.server_id.as_str()),
+        ("name", share_name.as_str()),
+        ("host", hostname.as_str()),
         ("kind", kind),
     ];
     let host_label: String = hostname
