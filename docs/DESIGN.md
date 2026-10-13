@@ -5,47 +5,72 @@
 - Share a single `.md` file or a whole folder (for example, an agent's context docs) when you need to, not all the time.
 - Read it on Android with a polished, native-feeling reader.
 - Work on the same Wi-Fi **and** away from home over Tailscale.
-- Keep the laptop side lightweight: one small binary with a few MB of RAM.
+- Pair a phone once, then never think about addresses or codes again.
+- Keep the laptop side lightweight: one ~2 MB binary using a few MB of RAM.
 
 ## Server (`server/`, Rust)
 
-- `mdshare <path> [--for 4h] [--keep-awake] [--port 7878]`
-  - Prints a QR code and a pairing token. Stops on Ctrl+C or when the `--for` deadline passes.
-  - With `--keep-awake`, it stops the laptop from sleeping while the share is active (Windows `SetThreadExecutionState`). Use it when you share before leaving the house.
+```
+mdshare <path> [--for 4h] [--idle 30m] [--keep-awake] [--port 7878] [--name NAME] [--no-mdns] [--no-pair]
+mdshare devices              # list paired phones
+mdshare unpair <id> | --all  # revoke a phone
+```
+
+- Prints a QR code and a 6-digit pair code. Stops on Ctrl+C, when the `--for` deadline passes, or after `--idle` with no phone connected.
+- `--keep-awake` stops the laptop from sleeping while the share is active (Windows `SetThreadExecutionState`). Use it when you share before leaving the house. If you close the lid, the laptop may still sleep, depending on the lid setting in Windows power options.
 - Stack: `axum` + `tokio`, `notify` (file watching), `mdns-sd` (LAN discovery), `qrcode`.
 - Sends **raw** files only. The app does all rendering.
-- API (every request needs `Authorization: Bearer <token>`):
-  - `GET /api/info`: share name, host, and whether it's a single file or a folder
-  - `GET /api/tree`: file tree (`.md` files plus image and asset files)
-  - `GET /api/file?path=…`: raw file contents (path is relative to the share root)
-  - `GET /api/events`: SSE stream of change events from the file watcher (live reload)
-- Security: read-only access, canonicalised paths that must stay inside the share root, and a random token for each session. Without the token every request gets a 401.
 
-### Reachability
+### API
 
-| Mode | How the phone finds the laptop |
+Every request except `ping` and `pair` needs a token, sent as `Authorization: Bearer <token>`, as a `?t=` query parameter (for `<img src>`), or as the browser page's cookie.
+
+| Endpoint | |
 |---|---|
-| Same Wi-Fi | mDNS `_mdshare._tcp`. The app lists shares automatically. |
-| Tailscale | mDNS doesn't cross a tailnet. The QR code / share link includes every reachable address: LAN IP, Tailscale `100.x` IP, and the MagicDNS name. The app saves the host and tries each address. |
+| `GET /api/ping` | `{app, version, server_id, name, host}`. Unauthenticated, so the app can tell which address answers and that it's the right laptop. |
+| `POST /api/pair` | `{secret}` (from the QR code) or `{code}` (6 digits), plus `device_name`. Returns this phone's own token, plus `server_id` and every address. |
+| `GET /api/info` | Share name, kind (`file`/`folder`), entry file, host, port, addresses, expiry. |
+| `GET /api/tree` | Nested tree of markdown files plus images, `.txt` and `.pdf`. Skips `.git`, `node_modules`, `target` and similar. |
+| `GET /api/file?path=…` | Raw contents with an `ETag`; answers `If-None-Match` with 304. Also at `/raw/<path>`. |
+| `GET /api/search?q=…` | Case-insensitive search across markdown files: `{hits: [{path, line, text}]}`. |
+| `GET /api/events` | SSE stream: `hello`, then `change` events `{paths, tree}` (200 ms debounce) for live reload. |
+| `GET /?t=…` | Minimal browser page (sets a cookie, then lists and shows files). |
 
-The server binds to `0.0.0.0` so it's reachable on both the LAN and the Tailscale interface. A share link looks like
-`mdshare://<host>:<port>?t=<token>&alt=<ip1>,<ip2>`.
+### Security
+
+- Read-only. Paths must be relative, can't contain `..`, `\` or `:` (NTFS streams), and must canonicalise to a file inside the share root. Only listed file types are served, never `.env`, keys or source code.
+- For a single-file share, only that file and the images it links to are served, even if it sits in a broad folder like the home directory.
+- Pairing: the QR code carries a random 24-character secret for the current session. The 6-digit code is for phones that found the laptop under Nearby; ten wrong codes lock it for the session (the QR secret still works). `--no-pair` turns pairing off entirely.
+- Each phone gets its own 32-character token. The laptop stores only its SHA-256 hash in `%APPDATA%\mdshare\mdshare.json` (`~/.config/mdshare` elsewhere), next to a permanent random `server_id`. `mdshare unpair` takes effect immediately, even while a share is running.
+- Responses carry `Referrer-Policy: no-referrer`, so a token in a URL never leaks to other sites. SVGs are served with a CSP that blocks scripts.
+
+### Reachability: pair once, reconnect anywhere
+
+| Channel | How the phone finds the laptop |
+|---|---|
+| B: same Wi-Fi | The laptop advertises `_mdshare._tcp` over mDNS with `id=<server_id>` in the TXT record. A paired phone matches the id, so it finds the laptop even after DHCP gives it a new address. Unpaired laptops show up as "tap to pair". |
+| Last known address | The address that worked last time is tried next. |
+| A: Tailscale | mDNS doesn't cross a tailnet, so pairing saves every address: LAN IP, Tailscale `100.x` IP and MagicDNS name (from `tailscale status --json`). Away from home the Tailscale address answers. |
+
+The app probes all candidates in parallel with `/api/ping`, takes the first that answers with the right `server_id`, then refreshes its saved addresses from `/api/info`. The server binds to `0.0.0.0`, so it answers on both the LAN and the Tailscale interface.
+
+QR link format: `mdshare://pair?id=<server_id>&s=<secret>&p=<port>&h=<host1>,<host2>,…`. Scanning it with the system camera also opens the app.
 
 ## App (`app/`, Expo + gluestack-ui v5)
 
-- UI shell: Expo Router + gluestack-ui v5 (NativeWind / Tailwind v4) for a polished, consistent component system.
-- Markdown rendering: `react-native-webview` running markdown-it, Shiki (code highlighting), KaTeX (math), and Mermaid (diagrams), with a themed reading stylesheet.
+- UI: Expo Router + gluestack-ui v5 (NativeWind v5 / Tailwind v4), with lucide icons.
+- State: zustand persisted to AsyncStorage. Device tokens live in `expo-secure-store`.
+- Discovery: `react-native-zeroconf`. Live reload: `react-native-sse`. QR: `expo-camera`.
+- Rendering: `react-native-webview` loads a reader page bundled into the APK's assets (`app/reader`). The page uses markdown-it (footnotes, task lists, `==mark==`, GitHub alerts, front matter), highlight.js, KaTeX and Mermaid (loaded only when a diagram appears), and sanitises everything with DOMPurify under a strict CSP. Every block carries its source line, so the reading position survives edits and live reloads.
 - Features:
-  - Shares list (discovered via mDNS plus saved Tailscale hosts) and a QR code scanner for pairing
-  - Folder browser that opens links between `.md` files inside the app
-  - Table of contents drawer, reading progress, and the last reading position remembered per file
-  - Light, dark, and sepia themes, adjustable font size and line width, and two-pane layout on tablets
-  - Live reload over SSE that keeps your scroll position
-  - Offline cache of files you've already opened
-  - Standalone reader: handles "Open with" for `.md` files and can open any local folder through the Storage Access Framework (SAF)
+  - Home: continue reading, paired laptops with live status, nearby unpaired laptops, phone folders and files
+  - Browse: file tree, filter by name, full-text search, two-pane layout on tablets
+  - Reader: light/sepia/dark/black themes, font, size, line width and spacing, table of contents, find in page, progress bar, copy buttons on code blocks, links between `.md` files open in the app
+  - Offline copies of every tree and file you've opened, used automatically when the laptop is unreachable
+  - Standalone reader: "Open with" for `.md` files, plus any phone folder through the Storage Access Framework
 
 ## Milestones
 
-1. **MVP:** server (`info`/`tree`/`file`, token, QR code) and an app that pairs by QR code, browses folders, and renders markdown.
-2. **v1:** live reload, mDNS discovery, Tailscale addresses, table of contents and search, themes, offline cache, "Open with" for local files.
-3. **v2:** right-click "Share via mdshare" in Windows Explorer, a web page fallback served by the binary, and multiple saved laptops.
+1. **MVP (done):** server, QR pairing, folder browsing, markdown rendering.
+2. **v1 (done):** pair once with per-device tokens, live reload, mDNS discovery, Tailscale addresses, table of contents and search, themes, offline cache, "Open with" for local files.
+3. **v2:** right-click "Share with mdshare" in Windows Explorer (done: `mdshare context-menu install`), a richer browser page served by the binary, and quick switching between multiple laptops.

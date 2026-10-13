@@ -4,6 +4,7 @@ mod mdns;
 mod net;
 mod server;
 mod share;
+mod shell;
 mod watch;
 mod web;
 
@@ -85,6 +86,17 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Add or remove "Share with mdshare" in the Windows Explorer right-click menu.
+    ContextMenu {
+        #[arg(value_enum)]
+        action: MenuAction,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum MenuAction {
+    Install,
+    Remove,
 }
 
 async fn bind(port: Option<u16>) -> anyhow::Result<TcpListener> {
@@ -150,7 +162,7 @@ fn ago(secs: u64) -> String {
     }
 }
 
-fn run_command(cmd: Command) {
+fn run_command(cmd: Command) -> anyhow::Result<()> {
     let reg = Registry::load();
     match cmd {
         Command::Devices => {
@@ -172,15 +184,33 @@ fn run_command(cmd: Command) {
             let n = reg.remove(if all { None } else { id.as_deref() });
             println!("Un-paired {n} phone{}.", if n == 1 { "" } else { "s" });
         }
+        Command::ContextMenu {
+            action: MenuAction::Install,
+        } => {
+            shell::install()?;
+            println!(
+                "Added \"Share with mdshare\" to the right-click menu for folders and .md files."
+            );
+            println!(
+                "On Windows 11 it's under \"Show more options\". It runs this copy of mdshare:"
+            );
+            println!("  {}", std::env::current_exe()?.display());
+        }
+        Command::ContextMenu {
+            action: MenuAction::Remove,
+        } => {
+            shell::uninstall()?;
+            println!("Removed \"Share with mdshare\" from the right-click menu.");
+        }
     }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(cmd) = cli.command {
-        run_command(cmd);
-        return Ok(());
+        return run_command(cmd);
     }
     let path = cli.path.as_deref().expect("required by clap");
     let share = Share::open(path, cli.name.clone())?;
@@ -375,5 +405,6 @@ mod tests {
         assert!(Cli::try_parse_from(["mdshare"]).is_err());
         assert!(Cli::try_parse_from(["mdshare", "unpair"]).is_err());
         assert!(Cli::try_parse_from(["mdshare", "unpair", "--all"]).is_ok());
+        assert!(Cli::try_parse_from(["mdshare", "context-menu", "install"]).is_ok());
     }
 }
