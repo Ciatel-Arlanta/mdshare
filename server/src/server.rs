@@ -120,7 +120,7 @@ pub fn router(state: AppRef) -> Router {
         .route("/api/ping", get(ping))
         .route("/api/pair", post(pair))
         .merge(authed)
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::permissive().expose_headers([header::ETAG]))
         .with_state(state)
 }
 
@@ -180,6 +180,7 @@ struct Ping<'a> {
 
 /// Unauthenticated probe so the app can find which address answers.
 async fn ping(State(state): State<AppRef>) -> impl IntoResponse {
+    state.last_activity.store(now_secs(), Ordering::Relaxed);
     Json(Ping {
         app: "mdshare",
         version: API_VERSION,
@@ -220,26 +221,31 @@ async fn pair(State(state): State<AppRef>, Json(req): Json<PairRequest>) -> Resp
         )
             .into_response();
     }
-    if state.pair_failures.load(Ordering::Relaxed) >= MAX_PAIR_FAILURES {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({ "error": "Too many wrong codes. Restart mdshare or scan the QR code." })),
-        )
-            .into_response();
-    }
+    state.last_activity.store(now_secs(), Ordering::Relaxed);
+    // The QR secret is too long to guess, so it always works. The 6-digit
+    // code gets a limited number of tries per session.
     let by_secret = req
         .secret
         .as_deref()
         .is_some_and(|s| same(s.trim(), &state.pair_secret));
-    let by_code = req
-        .code
-        .as_deref()
-        .map(|c| {
-            c.chars()
-                .filter(|c| !c.is_whitespace() && *c != '-')
-                .collect::<String>()
-        })
-        .is_some_and(|c| same(&c, &state.pair_code));
+    let mut by_code = false;
+    if !by_secret && let Some(code) = req.code.as_deref() {
+        // Reserve an attempt before checking, so parallel guesses can't all
+        // slip in under the limit.
+        if state.pair_failures.fetch_add(1, Ordering::SeqCst) >= MAX_PAIR_FAILURES {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({ "error": "Too many wrong codes. Scan the QR code, or restart mdshare for a new code." })),
+            )
+                .into_response();
+        }
+        let digits: String = code.chars().filter(char::is_ascii_digit).collect();
+        by_code = same(&digits, &state.pair_code);
+        if by_code {
+            // A success doesn't count against the limit.
+            state.pair_failures.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
     if by_secret || by_code {
         let name = req.device_name.as_deref().unwrap_or("Phone");
         let (device_id, token) = state.devices.pair(name);
@@ -254,7 +260,6 @@ async fn pair(State(state): State<AppRef>, Json(req): Json<PairRequest>) -> Resp
         })
         .into_response();
     }
-    state.pair_failures.fetch_add(1, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_millis(400)).await;
     (
         StatusCode::FORBIDDEN,
@@ -350,7 +355,11 @@ async fn serve_file(state: &AppState, rel: &str, headers: &HeaderMap) -> Respons
     let fresh = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+        .is_some_and(|v| {
+            v.split(',')
+                .map(str::trim)
+                .any(|t| t == "*" || t == etag || t.strip_prefix("W/") == Some(etag.as_str()))
+        });
     if fresh {
         return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
     }
@@ -376,6 +385,10 @@ async fn serve_file(state: &AppState, rel: &str, headers: &HeaderMap) -> Respons
     h.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
     );
     if content_type.starts_with("image/svg") {
         // SVGs can carry script; never let one run with the page's origin.
@@ -457,6 +470,11 @@ async fn index(State(state): State<AppRef>, req: Request) -> Response {
         .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // The page URL may carry the token; never send it to other sites.
+    res.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     res
 }
 

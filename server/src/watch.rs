@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -20,10 +21,16 @@ pub fn spawn(
     share: Arc<crate::server::AppState>,
     events: broadcast::Sender<ChangeEvent>,
 ) -> anyhow::Result<notify::RecommendedWatcher> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<notify::Event>();
+    // Bounded so a huge burst (a `git checkout`) can't pile up in memory;
+    // when it overflows, clients just reload everything.
+    let (tx, mut rx) = mpsc::channel::<notify::Event>(1024);
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let overflow_flag = overflowed.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(event) = res {
-            let _ = tx.send(event);
+        if let Ok(event) = res
+            && tx.try_send(event).is_err()
+        {
+            overflow_flag.store(true, Ordering::Relaxed);
         }
     })?;
     let mode = match share.share.kind {
@@ -46,6 +53,9 @@ pub fn spawn(
                         None => break,
                     },
                 }
+            }
+            if overflowed.swap(false, Ordering::Relaxed) {
+                change.tree = true;
             }
             if let Some(event) = change.finish() {
                 let _ = events.send(event);
@@ -79,12 +89,16 @@ impl Pending {
             // A single-file share only reports the file and its images.
             if let (ShareKind::File, Some(entry)) = (share.kind, &share.entry)
                 && &rel != entry
-                && !share.allows(path)
+                && !share.allows(&rel, path)
             {
                 continue;
             }
             if is_listed(path) {
-                self.paths.insert(rel);
+                // Only files that still exist are worth re-fetching; removals
+                // and the old half of a rename just make the tree stale.
+                if path.is_file() {
+                    self.paths.insert(rel);
+                }
                 self.tree |= structural;
             } else if structural && path.extension().is_none() {
                 // Probably a directory appearing or disappearing.

@@ -98,14 +98,28 @@ pub fn magicdns_name() -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Reads the child's stdout on a helper thread so a full pipe can't stall it.
-fn wait_with_timeout(child: std::process::Child, timeout: Duration) -> Option<Vec<u8>> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+/// Reads the child's stdout on a helper thread so a full pipe can't stall it,
+/// and kills the child if it takes longer than `timeout`.
+fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Option<Vec<u8>> {
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
     });
-    let output = rx.recv_timeout(timeout).ok()?.ok()?;
-    output.status.success().then_some(output.stdout)
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(25)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok()?.ok()?;
+    status.success().then_some(out)
 }
 
 #[cfg(test)]

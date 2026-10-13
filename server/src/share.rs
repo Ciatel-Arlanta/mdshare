@@ -146,7 +146,8 @@ impl Share {
     /// single-file shares) anything other than the shared file and assets.
     pub fn resolve(&self, rel: &str) -> Option<PathBuf> {
         let rel = rel.trim_start_matches('/');
-        if rel.is_empty() || rel.contains('\0') || rel.contains('\\') {
+        // `:` would select an NTFS alternate data stream (`notes.md:secret`).
+        if rel.is_empty() || rel.contains(['\0', '\\', ':']) {
             return None;
         }
         let candidate = Path::new(rel);
@@ -160,26 +161,41 @@ impl Share {
         if !full.starts_with(&self.root) || !full.is_file() {
             return None;
         }
-        if !self.allows(&full) {
+        let rel = rel_path(&self.root, &full)?;
+        if !self.allows(&rel, &full) {
             return None;
         }
         Some(full)
     }
 
-    /// Whether a canonical path inside the root is part of the share.
-    pub fn allows(&self, full: &Path) -> bool {
+    /// Whether `rel` (relative to the root; `full` is the same file) is part
+    /// of the share.
+    pub fn allows(&self, rel: &str, full: &Path) -> bool {
+        if in_skipped_dir(rel) {
+            return false;
+        }
         match (&self.kind, &self.entry) {
+            // The shared file itself, plus only the images it references.
+            // Everything else next to it stays private, even when the file
+            // lives somewhere broad like the home folder.
             (ShareKind::File, Some(entry)) => {
-                // The shared file itself, plus images it may reference.
-                // Sibling documents stay private.
-                rel_path(&self.root, full).as_deref() == Some(entry.as_str())
-                    || ext_in(full, IMAGE_EXTS)
+                rel == entry || (ext_in(full, IMAGE_EXTS) && self.entry_references(rel))
             }
             // Only the kinds of files the tree lists; never `.env`, keys or code.
-            _ => {
-                is_listed(full) && !in_skipped_dir(&rel_path(&self.root, full).unwrap_or_default())
-            }
+            _ => is_listed(full),
         }
+    }
+
+    /// Whether the single shared file mentions `rel` (as written, or with
+    /// spaces percent-encoded), i.e. links to that image.
+    fn entry_references(&self, rel: &str) -> bool {
+        let Some(entry) = &self.entry else {
+            return false;
+        };
+        let Ok(text) = fs::read_to_string(self.root.join(entry)) else {
+            return false;
+        };
+        text.contains(rel) || text.contains(&rel.replace(' ', "%20"))
     }
 
     pub fn tree(&self) -> Node {
@@ -359,7 +375,12 @@ mod tests {
         fs::create_dir_all(dir.join("docs/sub")).unwrap();
         fs::create_dir_all(dir.join("node_modules/x")).unwrap();
         fs::write(dir.join("README.md"), "# Hello\nSome Text here").unwrap();
-        fs::write(dir.join("docs/plan.md"), "plan\nfind the NEEDLE").unwrap();
+        fs::write(
+            dir.join("docs/plan.md"),
+            "plan\nfind the NEEDLE\n![x](img.png)",
+        )
+        .unwrap();
+        fs::write(dir.join("docs/other.png"), [0u8; 4]).unwrap();
         fs::write(dir.join("docs/img.png"), [0u8; 4]).unwrap();
         fs::write(dir.join("docs/code.rs"), "fn main() {}").unwrap();
         fs::write(dir.join("node_modules/x/README.md"), "skip").unwrap();
@@ -378,6 +399,7 @@ mod tests {
         assert!(share.resolve("/").is_none());
         assert!(share.resolve("docs").is_none());
         assert!(share.resolve("docs/code.rs").is_none());
+        assert!(share.resolve("README.md:stream").is_none());
         assert!(share.resolve("node_modules/x/README.md").is_none());
         assert!(
             share
@@ -406,6 +428,7 @@ mod tests {
         assert_eq!(share.kind, ShareKind::File);
         assert!(share.resolve("plan.md").is_some());
         assert!(share.resolve("img.png").is_some());
+        assert!(share.resolve("other.png").is_none(), "unreferenced image");
         assert!(share.resolve("code.rs").is_none());
         assert!(share.resolve("../README.md").is_none());
         fs::remove_dir_all(dir).ok();
