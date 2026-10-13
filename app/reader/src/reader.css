@@ -424,6 +424,11 @@ details pre {
   margin: 0;
 }
 
+pre.source-fallback {
+  white-space: pre-wrap;
+  font-size: 0.85em;
+}
+
 .front-matter {
   background: var(--surface);
 }

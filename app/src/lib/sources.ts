@@ -54,12 +54,16 @@ export interface Source {
   subscribe(fn: (e: ChangeEvent) => void): () => void;
   /** Try to (re)connect now. */
   refresh(): void;
+  /** Stop all network activity; the source is being removed. */
+  dispose(): void;
 }
 
 // ---------------------------------------------------------------------------
 // Laptop.
 
 const RECONNECT_MS = 5000;
+const RETRY_MIN_MS = 2000;
+const RETRY_MAX_MS = 30000;
 
 class LaptopSource implements Source {
   readonly kind = 'laptop' as const;
@@ -69,6 +73,11 @@ class LaptopSource implements Source {
   private listeners = new Set<(e: ChangeEvent) => void>();
   private stopEvents: (() => void) | null = null;
   private entryPath: string | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryDelay = RETRY_MIN_MS;
+  /** The live stream dropped; tell listeners to reload once it's back. */
+  private needsResync = false;
+  private disposed = false;
 
   constructor(
     readonly id: string,
@@ -93,10 +102,22 @@ class LaptopSource implements Source {
     this.client = null;
     this.stopEvents?.();
     this.stopEvents = null;
+    this.retryDelay = RETRY_MIN_MS;
     void this.connect();
   }
 
+  dispose() {
+    this.disposed = true;
+    this.listeners.clear();
+    this.stopEvents?.();
+    this.stopEvents = null;
+    this.client = null;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
   private connect(): Promise<Client | null> {
+    if (this.disposed) return Promise.resolve(null);
     if (this.client) return Promise.resolve(this.client);
     if (this.connecting) return this.connecting;
     if (Date.now() - this.lastAttempt < RECONNECT_MS) return Promise.resolve(null);
@@ -126,11 +147,13 @@ class LaptopSource implements Source {
           host: info.host,
           lastSeen: Date.now(),
         });
+        if (this.disposed) return null;
         this.client = client;
         setState(this.id, { status: 'online', via: tailscale ? 'Tailscale' : 'Wi-Fi', error: undefined });
         this.startEvents();
         return client;
       } catch (e) {
+        if (this.disposed) return null;
         const unpaired = e instanceof HttpError && e.status === 401;
         setState(this.id, {
           status: unpaired ? 'unpaired' : 'offline',
@@ -147,12 +170,61 @@ class LaptopSource implements Source {
     return this.connecting;
   }
 
+  private emit(e: ChangeEvent) {
+    this.listeners.forEach((fn) => fn(e));
+  }
+
   private startEvents() {
     if (!this.client || this.stopEvents || !this.listeners.size) return;
     this.stopEvents = this.client.events(
-      (e) => this.listeners.forEach((fn) => fn(e)),
-      (live) => setState(this.id, { live }),
+      (e) => this.emit(e),
+      (live) => {
+        if (!live) {
+          this.lost();
+          return;
+        }
+        setState(this.id, { live: true });
+        this.retryDelay = RETRY_MIN_MS;
+        if (this.needsResync) {
+          this.needsResync = false;
+          this.emit({ paths: [], tree: true, resync: true });
+        }
+      },
     );
+  }
+
+  /**
+   * The connection dropped (laptop asleep, Wi-Fi changed, share stopped).
+   * The SSE library doesn't retry network errors itself, so reconnect from
+   * scratch: that re-probes every address, which also handles moving between
+   * Wi-Fi and Tailscale.
+   */
+  private lost() {
+    this.stopEvents?.();
+    this.stopEvents = null;
+    this.client = null;
+    this.needsResync = true;
+    const status = useSourceStates.getState()[this.id]?.status;
+    setState(this.id, {
+      live: false,
+      ...(status === 'online' ? { status: 'offline' as const, error: 'Lost the connection.' } : {}),
+    });
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry() {
+    if (this.retryTimer || this.disposed || !this.listeners.size) return;
+    if (useSourceStates.getState()[this.id]?.status === 'unpaired') return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.lastAttempt = 0;
+      void this.connect().then((client) => {
+        if (!client) {
+          this.retryDelay = Math.min(this.retryDelay * 2, RETRY_MAX_MS);
+          this.scheduleRetry();
+        }
+      });
+    }, this.retryDelay);
   }
 
   private failed(e: unknown) {
@@ -160,10 +232,7 @@ class LaptopSource implements Source {
       setState(this.id, { status: 'unpaired', live: false, error: 'This laptop no longer recognises this phone.' });
     } else if (!(e instanceof HttpError)) {
       // Network failure: drop the client so the next call reconnects.
-      this.client = null;
-      this.stopEvents?.();
-      this.stopEvents = null;
-      setState(this.id, { status: 'offline', live: false, error: 'Lost the connection.' });
+      this.lost();
     }
   }
 
@@ -220,13 +289,18 @@ class LaptopSource implements Source {
   subscribe(fn: (e: ChangeEvent) => void) {
     this.listeners.add(fn);
     if (this.client) this.startEvents();
-    else void this.connect();
+    else
+      void this.connect().then((client) => {
+        if (!client) this.scheduleRetry();
+      });
     return () => {
       this.listeners.delete(fn);
       if (!this.listeners.size) {
         this.stopEvents?.();
         this.stopEvents = null;
-        setState(this.id, { live: false });
+        if (this.retryTimer) clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        if (!this.disposed) setState(this.id, { live: false });
       }
     };
   }
@@ -363,6 +437,8 @@ class FolderSource implements Source {
   subscribe() {
     return () => {};
   }
+
+  dispose() {}
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +512,8 @@ class FileSource implements Source {
   subscribe() {
     return () => {};
   }
+
+  dispose() {}
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +534,7 @@ export function getSource(id: string): Source | null {
 }
 
 export function forgetSource(id: string) {
-  sources.get(id)?.subscribe(() => {})();
+  sources.get(id)?.dispose();
   sources.delete(id);
   cache.clear(id);
   useSourceStates.setState((s) => {

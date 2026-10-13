@@ -69,8 +69,17 @@ export function DocReader({ sourceId, path, anchor, line, onBack, onOpen, safeTo
 
   if (!source) {
     return (
-      <View className="flex-1 items-center justify-center bg-background p-8">
-        <Text className="text-muted-foreground">This source is no longer available.</Text>
+      <View style={{ paddingTop: safeTop ? insets.top : 0 }} className="flex-1 bg-background">
+        {onBack ? (
+          <HStack className="h-14 items-center px-1">
+            <ToolButton icon={ArrowLeft} label="Back" onPress={onBack} />
+          </HStack>
+        ) : null}
+        <View className="flex-1 items-center justify-center p-8">
+          <Text className="text-center text-muted-foreground">
+            This laptop or folder was removed, so the document isn’t available any more.
+          </Text>
+        </View>
       </View>
     );
   }

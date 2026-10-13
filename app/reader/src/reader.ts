@@ -175,12 +175,20 @@ function render(opts: RenderOptions) {
   const keep = opts.keepPosition ? topPosition() : null;
   current = opts;
   frontMatterText = '';
-  const html = md.render(opts.markdown);
-  const clean = DOMPurify.sanitize(html, {
-    USE_PROFILES: { html: true, mathMl: true, svg: true },
-    ADD_ATTR: ['data-line', 'data-src', 'target', 'aria-hidden'],
-  });
-  doc.innerHTML = (frontMatterText ? frontMatterBlock(frontMatterText) : '') + clean;
+  try {
+    const html = md.render(opts.markdown);
+    const clean = DOMPurify.sanitize(html, {
+      USE_PROFILES: { html: true, mathMl: true, svg: true },
+      ADD_ATTR: ['data-line', 'data-src', 'target', 'aria-hidden'],
+    });
+    doc.innerHTML = (frontMatterText ? frontMatterBlock(frontMatterText) : '') + clean;
+  } catch {
+    // A parser bug shouldn't leave a blank page: show the source instead.
+    const pre = document.createElement('pre');
+    pre.className = 'source-fallback';
+    pre.textContent = opts.markdown;
+    doc.replaceChildren(pre);
+  }
 
   fixImages();
   blocks = Array.from(doc.querySelectorAll<HTMLElement>('[data-line]'));

@@ -1,9 +1,10 @@
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { CloudOff, FileText, QrCode, RefreshCw, Search, X } from 'lucide-react-native';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, View, useWindowDimensions } from 'react-native';
 
 import { DocReader } from '@/components/doc-reader';
+import { useNotify } from '@/components/notify';
 import { TreeView } from '@/components/tree-view';
 import { Button, ButtonIcon, ButtonSpinner, ButtonText } from '@/components/ui/button';
 import { HStack } from '@/components/ui/hstack';
@@ -97,6 +98,11 @@ export default function Browse() {
   const source = getSource(id);
   const { width } = useWindowDimensions();
   const split = width >= SPLIT_WIDTH;
+  const splitRef = useRef(split);
+  useEffect(() => {
+    splitRef.current = split;
+  }, [split]);
+  const notify = useNotify();
 
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [offline, setOffline] = useState(false);
@@ -115,8 +121,12 @@ export default function Browse() {
               setTree(res.tree);
               setOffline(res.offline);
               setError('');
+              // A single-file share opens straight into the reader on phones;
+              // tablets show it in the reading pane via `shown` below.
               const entry = source.entry();
-              if (entry) router.replace({ pathname: '/source/[id]/read', params: { id, path: entry } });
+              if (entry && !splitRef.current) {
+                router.replace({ pathname: '/source/[id]/read', params: { id, path: entry } });
+              }
             },
             (e) => setError(e instanceof Error ? e.message : String(e)),
           )
@@ -129,7 +139,7 @@ export default function Browse() {
   }, [load]);
 
   // Reload the tree when files are added or removed on the laptop.
-  useEffect(() => source?.subscribe((e) => e.tree && void load()), [source, load]);
+  useEffect(() => source?.subscribe((e) => (e.tree || e.resync) && void load()), [source, load]);
 
   // Coming back online after being offline.
   const status = useSourceStates((s) => s[id]?.status);
@@ -168,7 +178,7 @@ export default function Browse() {
     try {
       setHits(await source.search(query));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      notify(e instanceof Error ? e.message : String(e));
     } finally {
       setSearching(false);
     }

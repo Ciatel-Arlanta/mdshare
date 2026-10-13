@@ -1,7 +1,7 @@
 // Reading markdown that's already on the phone.
 
 import * as DocumentPicker from 'expo-document-picker';
-import { Directory } from 'expo-file-system';
+import { Directory, File } from 'expo-file-system';
 
 import { nameFromUri } from './paths';
 import { fileSourceId, folderSourceId, randomId, useStore } from './store';
@@ -28,8 +28,18 @@ export function addLocalFile(uri: string, name?: string): string {
   const existing = Object.values(useStore.getState().files).find((f) => f.uri === uri);
   if (existing) return fileSourceId(existing.id);
   const id = randomId();
-  useStore.getState().addFile({ id, uri, name: name || nameFromUri(uri), addedAt: Date.now() });
+  useStore.getState().addFile({ id, uri, name: name || displayName(uri), addedAt: Date.now() });
   return fileSourceId(id);
+}
+
+/** The file's real name. content:// URIs often end in an opaque number, so
+ * ask the content provider first. */
+function displayName(uri: string): string {
+  try {
+    const name = new File(uri).name;
+    if (name && !/^\d+$/.test(name)) return name;
+  } catch {}
+  return nameFromUri(uri);
 }
 
 export async function pickFile(): Promise<{ sourceId: string; name: string } | null> {

@@ -68,10 +68,13 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
   const [error, setError] = useState('');
   const notify = useNotify();
 
-  // Latest callbacks, so a parent re-render never reloads the document.
+  // Latest callbacks and jump targets, so a parent re-render never reloads
+  // the document.
   const cb = useRef({ onOpen, onToc, onProgress, onFind, onOffline });
+  const nav = useRef({ anchor, line });
   useEffect(() => {
     cb.current = { onOpen, onToc, onProgress, onFind, onOffline };
+    nav.current = { anchor, line };
   });
 
   const prefs = useStore((s) => s.prefs);
@@ -103,23 +106,43 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
         cb.current.onOffline?.(offline);
         const saved = useStore.getState().positions[docKey(source.id, path)];
         const firstTime = rendered.current !== path;
+        const { anchor: target, line: hit } = nav.current;
+        // The overlay goes away when the page reports `rendered`.
         call('render', {
           markdown: text,
           path,
           assetBase: source.assetBase(),
           keepPosition: opts.keepPosition && !firstTime,
-          line: firstTime && !anchor ? (line ? Math.max(0, line - 1) : saved?.line) : undefined,
-          anchor: firstTime ? anchor : undefined,
+          line: firstTime && !target ? (hit ? Math.max(0, hit - 1) : saved?.line) : undefined,
+          anchor: firstTime ? target : undefined,
         });
         rendered.current = path;
-        setState('ready');
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setState('error');
       }
     },
-    [source, path, anchor, line, call],
+    [source, path, call],
   );
+
+  // A new jump target for the document already on screen (a search hit or
+  // heading link in the tablet layout): scroll instead of re-rendering.
+  useEffect(() => {
+    if (!ready.current || rendered.current !== path) return;
+    if (anchor) call('scrollToId', anchor);
+    else if (line) call('scrollToLine', Math.max(0, line - 1));
+  }, [anchor, line, path, call]);
+
+  // Reading position: keep the latest in memory and persist it at most every
+  // couple of seconds (and when leaving), not on every scroll event.
+  const position = useRef<{ line: number; progress: number } | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushPosition = useCallback(() => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    if (position.current) savePosition(source.id, path, position.current);
+  }, [savePosition, source.id, path]);
+  useEffect(() => flushPosition, [flushPosition]);
 
   // Push preferences into the page whenever they change.
   useEffect(() => {
@@ -142,7 +165,7 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
   useEffect(
     () =>
       source.subscribe((e) => {
-        if (e.paths.includes(path)) {
+        if (e.resync || e.paths.includes(path)) {
           void load({ keepPosition: true });
         }
       }),
@@ -166,18 +189,26 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
           break;
         }
         case 'rendered':
+          setState('ready');
           cb.current.onToc?.(msg.toc);
           break;
         case 'scroll':
           cb.current.onProgress?.(msg.progress);
-          savePosition(source.id, path, { line: msg.line, progress: msg.progress });
+          position.current = { line: msg.line, progress: msg.progress };
+          saveTimer.current ??= setTimeout(flushPosition, 2000);
           break;
         case 'link':
           if (isMarkdown(msg.path)) cb.current.onOpen(msg.path, msg.anchor);
           else notify('That file type opens on the laptop only.');
           break;
         case 'external':
-          void Linking.openURL(msg.href).catch(() => notify("Couldn't open that link."));
+          // Only web and mail links; never intent:, content: or file: URIs
+          // that a document could use to poke other apps.
+          if (/^(https?|mailto):/i.test(msg.href.trim())) {
+            void Linking.openURL(msg.href).catch(() => notify("Couldn't open that link."));
+          } else {
+            notify('That kind of link can’t be opened from a document.');
+          }
           break;
         case 'asset': {
           const url = await source.asset(msg.path);
@@ -192,7 +223,7 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
           break;
       }
     },
-    [call, load, notify, path, savePosition, source, theme],
+    [call, load, notify, flushPosition, source, theme],
   );
 
   const background = READER_BACKGROUND[theme];
@@ -231,7 +262,13 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
           ) : (
             <VStack space="md" className="flex-1 items-center justify-center p-8">
               <Text className="text-center text-muted-foreground">{error}</Text>
-              <Button variant="outline" onPress={() => void load()}>
+              <Button
+                variant="outline"
+                onPress={() => {
+                  source.refresh();
+                  void load();
+                }}
+              >
                 <ButtonText>Try again</ButtonText>
               </Button>
             </VStack>

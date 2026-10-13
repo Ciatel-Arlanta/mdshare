@@ -52,6 +52,9 @@ export interface SearchHit {
 export interface ChangeEvent {
   paths: string[];
   tree: boolean;
+  /** Set by the app (not the server) after reconnecting: anything may have
+   * changed while the connection was down. */
+  resync?: boolean;
 }
 
 /** A laptop this phone has paired with. The token lives in SecureStore. */

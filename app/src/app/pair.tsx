@@ -12,10 +12,14 @@ import { pairWithCode } from '@/lib/pairing';
 
 const DEFAULT_PORT = 7878;
 
-/** "192.168.1.5", "192.168.1.5:7879" or "laptop.tail123.ts.net". */
+/** "192.168.1.5", "192.168.1.5:7879", "laptop.tail123.ts.net" or "[fd7a::1]:7878". */
 function parseAddress(text: string): Candidate | null {
   const t = text.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   if (!t) return null;
+  const v6 = /^\[([0-9a-f:.]+)\](?::(\d+))?$/i.exec(t);
+  if (v6) return { host: v6[1], port: v6[2] ? Number(v6[2]) : DEFAULT_PORT };
+  // A bare IPv6 address has several colons and no port.
+  if ((t.match(/:/g) ?? []).length > 1) return { host: t, port: DEFAULT_PORT };
   const m = /^(.+?)(?::(\d+))?$/.exec(t);
   if (!m) return null;
   return { host: m[1], port: m[2] ? Number(m[2]) : DEFAULT_PORT };

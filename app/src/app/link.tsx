@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { View } from 'react-native';
 
 import { Button, ButtonText } from '@/components/ui/button';
@@ -13,7 +13,7 @@ import { pairWithSecret } from '@/lib/pairing';
 /** Pairs from a scanned QR code (also reached via the mdshare:// link). */
 export default function Link() {
   const { url } = useLocalSearchParams<{ url: string }>();
-  const link = parsePairLink(url ?? '');
+  const link = useMemo(() => parsePairLink(url ?? ''), [url]);
   const [failure, setError] = useState('');
   const error = link ? failure : 'This isn’t a valid mdshare pairing code.';
 
@@ -33,7 +33,7 @@ export default function Link() {
         );
       },
     );
-  }, [link?.serverId, link?.secret]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [link]);
 
   useEffect(() => {
     void run();
