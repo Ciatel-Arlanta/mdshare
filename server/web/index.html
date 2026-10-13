@@ -3,43 +3,135 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>mdshare</title>
+<link rel="stylesheet" href="/assets/reader.css" onerror="document.documentElement.classList.add('plain')">
 <style>
-  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-  body { margin: 0 auto; max-width: 46rem; padding: 1.5rem; line-height: 1.6; }
-  a { color: inherit; }
-  li { margin: .25rem 0; }
-  pre { white-space: pre-wrap; word-wrap: break-word; font: .95rem/1.6 ui-monospace, monospace; }
+  :root { color-scheme: light dark; --side: 18rem; }
+  body { margin: 0; }
+  #bar {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: .5rem;
+    padding: .6rem 1rem; background: var(--bg, Canvas); border-bottom: 1px solid var(--border, #8884);
+    font: 600 15px/1.3 system-ui, sans-serif;
+  }
+  #bar button { font: inherit; background: none; border: 1px solid var(--border, #8884); border-radius: 8px; padding: .3rem .6rem; color: inherit; }
+  #bar .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #bar .live { width: 8px; height: 8px; border-radius: 50%; background: #8886; }
+  #bar .live.on { background: #2da44e; }
+  #layout { display: flex; }
+  #side {
+    width: var(--side); flex: none; height: calc(100vh - 49px); position: sticky; top: 49px; overflow: auto;
+    border-right: 1px solid var(--border, #8884); font: 14px/1.4 system-ui, sans-serif; padding: .5rem 0;
+    background: var(--bg, Canvas);
+  }
+  #side a { display: block; padding: .35rem 1rem; color: inherit; text-decoration: none; border-radius: 6px; margin: 0 .4rem; }
+  #side a:hover { background: var(--surface, #8882); }
+  #side a.active { background: var(--surface, #8883); font-weight: 600; }
+  #side .dir { padding: .6rem 1rem .2rem; color: var(--muted, GrayText); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  #main { flex: 1; min-width: 0; }
+  #menu { display: none; }
+  @media (max-width: 760px) {
+    #menu { display: inline-block; }
+    #side { position: fixed; left: 0; top: 49px; z-index: 3; box-shadow: 0 8px 30px #0004; transform: translateX(-105%); transition: transform .2s; }
+    body.open #side { transform: none; }
+  }
+  .plain #doc { white-space: pre-wrap; font: 15px/1.6 ui-monospace, monospace; max-width: 46rem; margin: 0 auto; padding: 1.5rem; }
 </style>
 </head>
 <body>
-<h2 id="title">mdshare</h2>
-<ul id="list"></ul>
-<pre id="doc"></pre>
+<div id="bar">
+  <button id="menu" aria-label="Files">☰</button>
+  <span class="title" id="title">mdshare</span>
+  <span class="live" id="live" title="Live reload"></span>
+</div>
+<div id="layout">
+  <nav id="side"></nav>
+  <div id="main"><main id="doc"></main></div>
+</div>
+<script src="/assets/reader.js" onerror="document.documentElement.classList.add('plain')"></script>
 <script>
-  history.replaceState(null, "", location.pathname + location.hash);
-  const list = document.getElementById("list"), doc = document.getElementById("doc");
-  function walk(node, out) {
-    if (node.kind === "dir") node.children.forEach(c => walk(c, out));
-    else if (node.markdown) out.push(node.path);
-    return out;
+(() => {
+  // Drop the token from the address bar; the cookie authenticates from here on.
+  history.replaceState(null, '', location.pathname + location.hash);
+
+  const side = document.getElementById('side');
+  const doc = document.getElementById('doc');
+  const title = document.getElementById('title');
+  const reader = window.mdshare;
+  let current = null;
+
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+  const theme = () => reader && reader.setPrefs({ theme: dark.matches ? 'dark' : 'light', fontSize: 18, width: 72 });
+  dark.addEventListener('change', theme);
+  theme();
+
+  const dirname = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+  const label = (p) => p.split('/').pop().replace(/\.(md|markdown|mdx|mdown|mkd|mkdn)$/i, '');
+
+  // Messages the reader would normally send to the app.
+  window.mdshareHost = (msg) => {
+    if (msg.type === 'link') open(msg.path, msg.anchor);
+    else if (msg.type === 'external') window.open(msg.href, '_blank', 'noopener,noreferrer');
+    else if (msg.type === 'copy') navigator.clipboard?.writeText(msg.text);
+  };
+
+  async function open(path, anchor, keep) {
+    const res = await fetch('/api/file?path=' + encodeURIComponent(path));
+    if (!res.ok) return;
+    const text = await res.text();
+    current = path;
+    title.textContent = label(path);
+    document.title = label(path) + ' · mdshare';
+    if (!keep) location.hash = encodeURIComponent(path);
+    for (const a of side.querySelectorAll('a')) a.classList.toggle('active', a.dataset.path === path);
+    document.body.classList.remove('open');
+    if (reader) reader.render({ markdown: text, path, assetBase: '/api/file?path=', anchor, keepPosition: keep });
+    else doc.textContent = text;
   }
-  async function open(path) {
-    const res = await fetch("/api/file?path=" + encodeURIComponent(path));
-    doc.textContent = await res.text();
-    location.hash = encodeURIComponent(path);
-  }
-  fetch("/api/tree").then(r => r.json()).then(tree => {
-    document.getElementById("title").textContent = tree.name;
-    for (const path of walk(tree, [])) {
-      const li = document.createElement("li"), a = document.createElement("a");
-      a.href = "#" + encodeURIComponent(path);
-      a.textContent = path;
-      a.onclick = e => { e.preventDefault(); open(path); };
-      li.append(a); list.append(li);
+
+  async function loadTree() {
+    const tree = await (await fetch('/api/tree')).json();
+    const files = [];
+    (function walk(n) { if (n.kind === 'dir') n.children.forEach(walk); else if (n.markdown) files.push(n.path); })(tree);
+    side.innerHTML = '';
+    let lastDir = null;
+    for (const p of files) {
+      const d = dirname(p);
+      if (d !== lastDir) {
+        if (d) { const h = document.createElement('div'); h.className = 'dir'; h.textContent = d; side.append(h); }
+        lastDir = d;
+      }
+      const a = document.createElement('a');
+      a.href = '#' + encodeURIComponent(p);
+      a.dataset.path = p;
+      a.textContent = label(p);
+      a.onclick = (e) => { e.preventDefault(); open(p); };
+      side.append(a);
     }
-    if (location.hash) open(decodeURIComponent(location.hash.slice(1)));
+    return { files, name: tree.name };
+  }
+
+  document.getElementById('menu').onclick = () => document.body.classList.toggle('open');
+
+  loadTree().then(({ files, name }) => {
+    const fromHash = decodeURIComponent(location.hash.slice(1));
+    const first = files.includes(fromHash) ? fromHash : files.find((p) => /readme/i.test(p)) || files[0];
+    if (files.length < 2) document.getElementById('side').style.display = 'none';
+    if (first) open(first, undefined, true);
+    else title.textContent = name;
   });
+
+  // Live reload.
+  const live = document.getElementById('live');
+  const es = new EventSource('/api/events');
+  es.addEventListener('hello', () => live.classList.add('on'));
+  es.addEventListener('error', () => live.classList.remove('on'));
+  es.addEventListener('change', (e) => {
+    const change = JSON.parse(e.data);
+    if (change.tree) loadTree();
+    if (current && change.paths.includes(current)) open(current, undefined, true);
+  });
+})();
 </script>
 </body>
 </html>

@@ -117,6 +117,7 @@ pub fn router(state: AppRef) -> Router {
 
     Router::new()
         .route("/", get(index))
+        .route("/assets/{*name}", get(crate::web::asset))
         .route("/api/ping", get(ping))
         .route("/api/pair", post(pair))
         .merge(authed)

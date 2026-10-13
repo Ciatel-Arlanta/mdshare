@@ -63,6 +63,8 @@ export interface TocItem {
 declare global {
   interface Window {
     ReactNativeWebView?: { postMessage(data: string): void };
+    /** Set by the server's browser page, which hosts the reader outside the app. */
+    mdshareHost?: (msg: OutMessage) => void;
     mermaid?: {
       initialize(config: object): void;
       run(opts: { nodes: Element[] }): Promise<void>;
@@ -72,7 +74,8 @@ declare global {
 }
 
 function post(msg: OutMessage) {
-  window.ReactNativeWebView?.postMessage(JSON.stringify(msg));
+  if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+  else window.mdshareHost?.(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -233,11 +236,13 @@ function assetResolved(path: string, url: string) {
 }
 
 let mermaidLoading: Promise<void> | null = null;
+// Mermaid sits next to reader.js, wherever the page itself is served from.
+const scriptBase = (document.currentScript as HTMLScriptElement | null)?.src ?? location.href;
 
 function loadMermaid(): Promise<void> {
   mermaidLoading ??= new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'mermaid.min.js';
+    s.src = new URL('mermaid.min.js', scriptBase).href;
     s.onload = () => resolve();
     s.onerror = () => reject(new Error('mermaid failed to load'));
     document.head.appendChild(s);

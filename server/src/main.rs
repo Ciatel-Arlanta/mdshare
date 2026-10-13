@@ -60,6 +60,11 @@ struct Cli {
     #[arg(long)]
     port: Option<u16>,
 
+    /// Address to listen on. The default reaches Wi-Fi and Tailscale;
+    /// `127.0.0.1` keeps the share on this machine (handy for testing).
+    #[arg(long, default_value = "0.0.0.0")]
+    bind: std::net::IpAddr,
+
     /// Name shown in the app. Defaults to the file or folder name.
     #[arg(long)]
     name: Option<String>,
@@ -99,14 +104,14 @@ enum MenuAction {
     Remove,
 }
 
-async fn bind(port: Option<u16>) -> anyhow::Result<TcpListener> {
+async fn bind(ip: std::net::IpAddr, port: Option<u16>) -> anyhow::Result<TcpListener> {
     let candidates: Vec<u16> = match port {
         Some(p) => vec![p],
         None => (DEFAULT_PORT..DEFAULT_PORT + 20).collect(),
     };
     let mut last_err = None;
     for p in candidates {
-        match TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], p))).await {
+        match TcpListener::bind(SocketAddr::new(ip, p)).await {
             Ok(l) => return Ok(l),
             Err(e) => last_err = Some(e),
         }
@@ -220,10 +225,26 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "laptop".into());
 
     let magicdns = tokio::task::spawn_blocking(net::magicdns_name);
-    let listener = bind(cli.port).await?;
+    let listener = bind(cli.bind, cli.port).await?;
     let port = listener.local_addr()?.port();
-    let addrs = net::local_addrs();
-    let magicdns = magicdns.await.ok().flatten();
+    let addrs = if cli.bind.is_unspecified() {
+        net::local_addrs()
+    } else {
+        vec![net::Addr {
+            host: cli.bind.to_string(),
+            kind: if matches!(cli.bind, std::net::IpAddr::V4(v4) if net::is_tailscale(v4)) {
+                AddrKind::Tailscale
+            } else {
+                AddrKind::Lan
+            },
+        }]
+    };
+    // A specific --bind address isn't reachable through MagicDNS.
+    let magicdns = magicdns
+        .await
+        .ok()
+        .flatten()
+        .filter(|_| cli.bind.is_unspecified());
 
     let mut all_addrs = addrs.clone();
     all_addrs.extend(magicdns.iter().map(|h| net::Addr {
