@@ -76,6 +76,10 @@ struct Cli {
     /// Only let already-paired phones in; no QR code or pair code this time.
     #[arg(long)]
     no_pair: bool,
+
+    /// Also print the pairing link as text (to paste on a phone without a camera).
+    #[arg(long)]
+    show_link: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -313,12 +317,11 @@ async fn main() -> anyhow::Result<()> {
     if cli.no_pair {
         println!("  Pairing is off; only phones paired before can connect.");
     } else {
-        print_qr(&pair_link(
-            &state.server_id,
-            &state.pair_secret,
-            &hosts,
-            port,
-        ));
+        let link = pair_link(&state.server_id, &state.pair_secret, &hosts, port);
+        print_qr(&link);
+        if cli.show_link {
+            println!("  {link}");
+        }
         println!();
         println!("  New phone? Scan the QR code in the mdshare app, or pick this laptop");
         println!("  under Nearby and type the pair code. You only pair once.");
