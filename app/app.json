@@ -8,7 +8,6 @@
     "scheme": "mdshare",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
       "bundleIdentifier": "dev.mdshare.reader"
     },
     "android": {
@@ -20,18 +19,41 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "permissions": ["android.permission.CAMERA", "android.permission.CHANGE_WIFI_MULTICAST_STATE"],
-      "blockedPermissions": ["android.permission.RECORD_AUDIO"],
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",
-          "category": ["DEFAULT", "BROWSABLE"],
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ],
           "data": [
-            { "scheme": "content", "mimeType": "text/markdown" },
-            { "scheme": "content", "mimeType": "text/x-markdown" },
-            { "scheme": "content", "mimeType": "text/plain" },
-            { "scheme": "file", "mimeType": "text/markdown" },
-            { "scheme": "file", "mimeType": "text/x-markdown" }
+            {
+              "scheme": "content",
+              "mimeType": "text/markdown"
+            },
+            {
+              "scheme": "content",
+              "mimeType": "text/x-markdown"
+            },
+            {
+              "scheme": "content",
+              "mimeType": "text/plain"
+            },
+            {
+              "scheme": "file",
+              "mimeType": "text/markdown"
+            },
+            {
+              "scheme": "file",
+              "mimeType": "text/x-markdown"
+            }
           ]
         }
       ]

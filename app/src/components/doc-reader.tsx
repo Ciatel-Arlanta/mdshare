@@ -1,4 +1,5 @@
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { StatusBar } from 'expo-status-bar';
 import { ArrowLeft, ChevronDown, ChevronUp, CloudOff, List, Search, Type, X } from 'lucide-react-native';
 import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
@@ -13,6 +14,7 @@ import { VStack } from '@/components/ui/vstack';
 import { basename, stripExtension } from '@/lib/paths';
 import { getSource, useSourceStates } from '@/lib/sources';
 import { useStore } from '@/lib/store';
+import { READER_CHROME, useReaderTheme } from '@/lib/theme';
 
 import { ReaderView, type ReaderHandle, type TocItem } from './reader-view';
 import { AppearanceSheet, TocSheet } from './sheets';
@@ -29,10 +31,20 @@ interface Props {
   safeTop?: boolean;
 }
 
-function ToolButton({ icon, label, onPress }: { icon: typeof List; label: string; onPress(): void }) {
+function ToolButton({
+  icon,
+  label,
+  onPress,
+  color,
+}: {
+  icon: typeof List;
+  label: string;
+  onPress(): void;
+  color?: string;
+}) {
   return (
     <Button variant="ghost" size="icon" className="h-11 w-11 rounded-full" onPress={onPress} accessibilityLabel={label}>
-      <ButtonIcon as={icon} className="h-[22px] w-[22px]" />
+      <ButtonIcon as={icon} className="h-[22px] w-[22px]" color={color} />
     </Button>
   );
 }
@@ -44,6 +56,7 @@ export function DocReader({ sourceId, path, anchor, line, onBack, onOpen, safeTo
   const touchRecent = useStore((s) => s.touchRecent);
   const insets = useSafeAreaInsets();
   const reader = useRef<ReaderHandle>(null);
+  const chrome = READER_CHROME[useReaderTheme()];
 
   const [toc, setToc] = useState<TocItem[]>([]);
   const [progress, setProgress] = useState(0);
@@ -98,13 +111,19 @@ export function DocReader({ sourceId, path, anchor, line, onBack, onOpen, safeTo
   };
 
   return (
-    <View className="flex-1 bg-background">
-      <View style={{ paddingTop: safeTop ? insets.top : 0 }} className="border-b border-border bg-background">
+    <View className="flex-1" style={{ backgroundColor: chrome.bg }}>
+      {safeTop ? <StatusBar style={chrome.dark ? 'light' : 'dark'} /> : null}
+      <View
+        style={{ paddingTop: safeTop ? insets.top : 0, backgroundColor: chrome.bg, borderBottomColor: chrome.border }}
+        className="border-b"
+      >
         {finding ? (
           <HStack space="xs" className="h-14 items-center px-1">
-            <ToolButton icon={X} label="Close search" onPress={closeFind} />
-            <Input className="h-10 flex-1 rounded-full">
+            <ToolButton icon={X} label="Close search" onPress={closeFind} color={chrome.fg} />
+            <Input className="h-10 flex-1 rounded-full" style={{ borderColor: chrome.border }}>
               <InputField
+                style={{ color: chrome.fg }}
+                placeholderTextColor={chrome.muted}
                 value={query}
                 onChangeText={(q) => {
                   setQuery(q);
@@ -116,30 +135,49 @@ export function DocReader({ sourceId, path, anchor, line, onBack, onOpen, safeTo
                 onSubmitEditing={() => reader.current?.findStep(1)}
               />
             </Input>
-            <Text size="sm" className="min-w-12 text-center text-muted-foreground">
+            <Text size="sm" className="min-w-12 text-center" style={{ color: chrome.muted }}>
               {query ? `${found.current}/${found.total}` : ''}
             </Text>
-            <ToolButton icon={ChevronUp} label="Previous match" onPress={() => reader.current?.findStep(-1)} />
-            <ToolButton icon={ChevronDown} label="Next match" onPress={() => reader.current?.findStep(1)} />
+            <ToolButton
+              icon={ChevronUp}
+              label="Previous match"
+              onPress={() => reader.current?.findStep(-1)}
+              color={chrome.fg}
+            />
+            <ToolButton
+              icon={ChevronDown}
+              label="Next match"
+              onPress={() => reader.current?.findStep(1)}
+              color={chrome.fg}
+            />
           </HStack>
         ) : (
           <HStack className="h-14 items-center px-1">
-            {onBack ? <ToolButton icon={ArrowLeft} label="Back" onPress={onBack} /> : <View className="w-3" />}
+            {onBack ? (
+              <ToolButton icon={ArrowLeft} label="Back" onPress={onBack} color={chrome.fg} />
+            ) : (
+              <View className="w-3" />
+            )}
             <VStack className="flex-1 px-1">
-              <Text className="font-semibold" numberOfLines={1}>
+              <Text className="font-semibold" numberOfLines={1} style={{ color: chrome.fg }}>
                 {title}
               </Text>
               <HStack space="xs" className="items-center">
                 {offline ? <Icon as={CloudOff} size="2xs" className="text-warning" /> : null}
                 {state?.live && !offline ? <View className="h-1.5 w-1.5 rounded-full bg-success" /> : null}
-                <Text size="xs" className="text-muted-foreground" numberOfLines={1}>
+                <Text size="xs" numberOfLines={1} style={{ color: chrome.muted }}>
                   {subtitle}
                 </Text>
               </HStack>
             </VStack>
-            <ToolButton icon={Search} label="Find in document" onPress={() => setFinding(true)} />
-            <ToolButton icon={List} label="Contents" onPress={() => setSheet('toc')} />
-            <ToolButton icon={Type} label="Reading settings" onPress={() => setSheet('appearance')} />
+            <ToolButton icon={Search} label="Find in document" onPress={() => setFinding(true)} color={chrome.fg} />
+            <ToolButton icon={List} label="Contents" onPress={() => setSheet('toc')} color={chrome.fg} />
+            <ToolButton
+              icon={Type}
+              label="Reading settings"
+              onPress={() => setSheet('appearance')}
+              color={chrome.fg}
+            />
           </HStack>
         )}
         <View className="h-0.5 bg-transparent">

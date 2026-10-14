@@ -1,12 +1,16 @@
 import '@/global.css';
 
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import { DarkTheme, DefaultTheme, type ErrorBoundaryProps, Stack, ThemeProvider, router } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useSyncExternalStore } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { Button, ButtonText } from '@/components/ui/button';
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider';
+import { Heading } from '@/components/ui/heading';
+import { Text } from '@/components/ui/text';
+import { VStack } from '@/components/ui/vstack';
 import { useDiscovery } from '@/lib/discovery';
 import { useStore } from '@/lib/store';
 import { useColors, useScheme } from '@/lib/theme';
@@ -16,6 +20,31 @@ SplashScreen.preventAutoHideAsync();
 // Deep links ("Open with", pairing links) land on top of the home screen, so
 // back always has somewhere to go.
 export const unstable_settings = { initialRouteName: 'index' };
+
+/** Shown instead of closing the app when a screen throws while rendering. */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <GluestackUIProvider mode={useStore.getState().prefs.appearance}>
+      <VStack space="lg" className="flex-1 justify-center bg-background p-8">
+        <Heading size="xl">Something went wrong</Heading>
+        <Text className="text-muted-foreground">{error.message}</Text>
+        <Button className="h-12 rounded-xl" onPress={retry}>
+          <ButtonText>Try again</ButtonText>
+        </Button>
+        <Button
+          variant="outline"
+          className="h-12 rounded-xl"
+          onPress={() => {
+            router.dismissAll();
+            router.replace('/');
+          }}
+        >
+          <ButtonText>Go home</ButtonText>
+        </Button>
+      </VStack>
+    </GluestackUIProvider>
+  );
+}
 
 function useHydrated() {
   return useSyncExternalStore(useStore.persist.onFinishHydration, useStore.persist.hasHydrated);

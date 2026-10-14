@@ -274,6 +274,9 @@ async function renderDiagrams() {
     fontFamily: 'inherit',
   });
   for (const n of nodes) {
+    // Hold the current height so re-rendering (e.g. after a theme change)
+    // doesn't make the page jump.
+    if (n.offsetHeight) n.style.minHeight = `${n.offsetHeight}px`;
     n.removeAttribute('data-processed');
     n.textContent = n.dataset.src ?? n.textContent;
   }
@@ -282,6 +285,7 @@ async function renderDiagrams() {
   } catch {
     // Mermaid leaves its own error box in place of a broken diagram.
   }
+  for (const n of nodes) n.style.minHeight = '';
 }
 
 // ---------------------------------------------------------------------------

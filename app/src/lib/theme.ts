@@ -50,6 +50,17 @@ export const READER_BACKGROUND: Record<Exclude<ReaderTheme, 'auto'>, string> = {
   black: '#000000',
 };
 
+/** Colours for the reader's top bar, so it matches the page below it. */
+export const READER_CHROME: Record<
+  Exclude<ReaderTheme, 'auto'>,
+  { bg: string; fg: string; muted: string; border: string; dark: boolean }
+> = {
+  light: { bg: '#ffffff', fg: '#1f2328', muted: '#59636e', border: '#d8dee4', dark: false },
+  sepia: { bg: '#f6efe2', fg: '#3b3226', muted: '#6f604c', border: '#ddd0b8', dark: false },
+  dark: { bg: '#0d1117', fg: '#e6edf3', muted: '#9198a1', border: '#30363d', dark: true },
+  black: { bg: '#000000', fg: '#e6edf3', muted: '#9198a1', border: '#262a30', dark: true },
+};
+
 export function useReaderTheme(): Exclude<ReaderTheme, 'auto'> {
   const scheme = useScheme();
   const theme = useStore((s) => s.prefs.readerTheme);

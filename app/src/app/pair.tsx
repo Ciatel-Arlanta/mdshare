@@ -109,7 +109,11 @@ export default function Pair() {
                 keyboardType="number-pad"
                 autoFocus={discovered}
                 maxLength={7}
-                className="text-center text-3xl tracking-widest"
+                // Not `text-center`: react-native-css 3.0 crashes mapping
+                // textAlign on TextInput, so use the native prop.
+                textAlign="center"
+                className="text-3xl"
+                style={{ letterSpacing: 6 }}
                 onSubmitEditing={() => void submit()}
               />
             </Input>
