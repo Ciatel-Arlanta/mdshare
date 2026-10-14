@@ -14,3 +14,6 @@ app/ios/
 Thumbs.db
 .vscode/
 .idea/
+
+# Built APK copied to the repo root
+mdshare.apk
