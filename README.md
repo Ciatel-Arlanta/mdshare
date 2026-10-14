@@ -29,7 +29,7 @@ app/      Android reader: Expo (React Native) + gluestack-ui v5
 docs/     Design notes
 ```
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the architecture, API and security model.
+See [docs/DESIGN.md](docs/DESIGN.md) for the architecture, API and security model, and [docs/TAILSCALE.md](docs/TAILSCALE.md) for reading away from home.
 
 ## Build
 
