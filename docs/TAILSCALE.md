@@ -20,7 +20,7 @@ mdshare .\docs --for 6h --keep-awake
 - `--keep-awake` stops the laptop from going to sleep while it's sharing. Closing the lid can still put it to sleep, depending on the "When I close the lid" setting under Windows power options. Leave the lid open, or set that option to *Do nothing* when plugged in.
 - `--for 6h` stops the share after six hours, so it doesn't run forever.
 
-Out of the house, open the app with Tailscale connected on the phone. The laptop shows up as *Sharing · Tailscale*. Live reload works the same as at home.
+Out of the house, open the app with Tailscale connected on the phone. On the home screen the laptop shows "Sharing from … · Tailscale". Live reload works the same as at home.
 
 ## If it doesn't connect
 
