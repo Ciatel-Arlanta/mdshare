@@ -52,7 +52,8 @@ struct Cli {
     #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration)]
     idle: Option<Duration>,
 
-    /// Keep the laptop from sleeping while sharing (the screen may still turn off).
+    /// Keep the laptop from idle-sleeping while sharing. Closing the lid still
+    /// sleeps it unless the lid action is set to "Do nothing".
     #[arg(long)]
     keep_awake: bool,
 
@@ -356,7 +357,9 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("  Stops       {}", stops.join(", or "));
     if _awake.is_some() {
-        println!("  Keep-awake  on (the laptop won't sleep while sharing)");
+        println!(
+            "  Keep-awake  on (no idle sleep; closing the lid still sleeps unless set to \"Do nothing\")"
+        );
     }
     println!();
 

@@ -17,7 +17,7 @@ mdshare unpair <id> | --all  # revoke a phone
 ```
 
 - Prints a QR code and a 6-digit pair code. Stops on Ctrl+C, when the `--for` deadline passes, or after `--idle` with no phone connected.
-- `--keep-awake` stops the laptop from sleeping while the share is active (Windows `SetThreadExecutionState`). Use it when you share before leaving the house. If you close the lid, the laptop may still sleep, depending on the lid setting in Windows power options.
+- `--keep-awake` stops idle sleep while the share is active (Windows `SetThreadExecutionState`). It doesn't override the lid: closing the lid sleeps the laptop (Modern Standby suspends the server and Tailscale) unless the lid action is "Do nothing". See [TAILSCALE.md](TAILSCALE.md).
 - Stack: `axum` + `tokio`, `notify` (file watching), `mdns-sd` (LAN discovery), `qrcode`.
 - Sends **raw** files only. The app does all rendering.
 
