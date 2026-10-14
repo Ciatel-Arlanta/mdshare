@@ -98,12 +98,16 @@ class LaptopSource implements Source {
   }
 
   refresh() {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.lastAttempt = 0;
     this.client = null;
     this.stopEvents?.();
     this.stopEvents = null;
     this.retryDelay = RETRY_MIN_MS;
-    void this.connect();
+    void this.connect().then((client) => {
+      if (!client) this.scheduleRetry();
+    });
   }
 
   dispose() {
@@ -127,6 +131,7 @@ class LaptopSource implements Source {
     this.connecting = (async () => {
       const laptop = this.laptop();
       const token = await tokens.get(this.serverId);
+      if (this.disposed) return null;
       if (!laptop || !token) {
         setState(this.id, { status: 'unpaired', live: false, error: 'This laptop is no longer paired.' });
         return null;
@@ -137,6 +142,7 @@ class LaptopSource implements Source {
         const { candidate } = await firstReachable(candidatesFor(laptop, fromMdns), this.serverId);
         const client = new Client(candidate.host, candidate.port, token);
         const info = await client.info();
+        if (this.disposed) return null;
         this.entryPath = info.kind === 'file' ? (info.entry ?? undefined) : undefined;
         const tailscale = info.addrs.some((a) => a.host === candidate.host && a.kind === 'tailscale');
         useStore.getState().updateLaptop(this.serverId, {
@@ -200,6 +206,7 @@ class LaptopSource implements Source {
    * Wi-Fi and Tailscale.
    */
   private lost() {
+    if (this.disposed) return;
     this.stopEvents?.();
     this.stopEvents = null;
     this.client = null;
@@ -228,6 +235,7 @@ class LaptopSource implements Source {
   }
 
   private failed(e: unknown) {
+    if (this.disposed) return;
     if (e instanceof HttpError && e.status === 401) {
       setState(this.id, { status: 'unpaired', live: false, error: 'This laptop no longer recognises this phone.' });
     } else if (!(e instanceof HttpError)) {

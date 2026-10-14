@@ -221,7 +221,7 @@ export default function Home() {
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={['top']}>
-      <ScrollView contentContainerClassName="px-4 pb-12">
+      <ScrollView contentContainerClassName="w-full max-w-3xl self-center px-4 pb-12">
         <HStack className="items-center justify-between pb-2 pt-4">
           <VStack>
             <Heading size="2xl">mdshare</Heading>

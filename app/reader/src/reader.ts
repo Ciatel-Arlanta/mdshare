@@ -252,7 +252,11 @@ function loadMermaid(): Promise<void> {
     const s = document.createElement('script');
     s.src = new URL('mermaid.min.js', scriptBase).href;
     s.onload = () => resolve();
-    s.onerror = () => reject(new Error('mermaid failed to load'));
+    s.onerror = () => {
+      mermaidLoading = null;
+      s.remove();
+      reject(new Error('mermaid failed to load'));
+    };
     document.head.appendChild(s);
   });
   return mermaidLoading;

@@ -64,6 +64,10 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
   const web = useRef<WebView>(null);
   const ready = useRef(false);
   const rendered = useRef<string | null>(null);
+  /** The document the page has finished rendering (set on its `rendered` message). */
+  const shown = useRef<string | null>(null);
+  /** Latest reading position, persisted on a timer (see flushPosition). */
+  const position = useRef<{ line: number; progress: number } | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
   const notify = useNotify();
@@ -106,6 +110,7 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
         cb.current.onOffline?.(offline);
         const saved = useStore.getState().positions[docKey(source.id, path)];
         const firstTime = rendered.current !== path;
+        if (firstTime) position.current = null;
         const { anchor: target, line: hit } = nav.current;
         // The overlay goes away when the page reports `rendered`.
         call('render', {
@@ -128,14 +133,13 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
   // A new jump target for the document already on screen (a search hit or
   // heading link in the tablet layout): scroll instead of re-rendering.
   useEffect(() => {
-    if (!ready.current || rendered.current !== path) return;
+    if (!ready.current || shown.current !== path) return;
     if (anchor) call('scrollToId', anchor);
     else if (line) call('scrollToLine', Math.max(0, line - 1));
   }, [anchor, line, path, call]);
 
   // Reading position: keep the latest in memory and persist it at most every
   // couple of seconds (and when leaving), not on every scroll event.
-  const position = useRef<{ line: number; progress: number } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushPosition = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -189,6 +193,7 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
           break;
         }
         case 'rendered':
+          shown.current = path;
           setState('ready');
           cb.current.onToc?.(msg.toc);
           break;
@@ -247,6 +252,7 @@ export const ReaderView = forwardRef<ReaderHandle, Props>(function ReaderView(
         onLoadStart={() => {
           ready.current = false;
           rendered.current = null;
+          shown.current = null;
         }}
         style={{ flex: 1, backgroundColor: background }}
         webviewDebuggingEnabled={__DEV__}
