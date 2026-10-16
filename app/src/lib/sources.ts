@@ -7,9 +7,9 @@ import { create } from 'zustand';
 
 import { cache } from './cache';
 import { useNearby } from './discovery';
-import { Client, HttpError, candidatesFor, firstReachable } from './net';
+import { Client, HttpError, candidatesFor, firstReachable, sharesIn } from './net';
 import { isImage, isMarkdown, mimeFor } from './paths';
-import { tokens, useStore } from './store';
+import { parseLaptopSourceId, tokens, useStore } from './store';
 import type { ChangeEvent, SearchHit, TreeNode } from './types';
 
 export type Status = 'connecting' | 'online' | 'offline' | 'unpaired' | 'local';
@@ -82,6 +82,8 @@ class LaptopSource implements Source {
   constructor(
     readonly id: string,
     private readonly serverId: string,
+    /** Unset for laptops on an older mdshare: then it's whatever they share. */
+    private readonly shareId?: string,
   ) {}
 
   private laptop() {
@@ -90,6 +92,7 @@ class LaptopSource implements Source {
 
   title() {
     const l = this.laptop();
+    if (this.shareId) return l?.shares?.[this.shareId]?.name ?? l?.host ?? 'Laptop';
     return l?.shareName ?? l?.host ?? 'Laptop';
   }
 
@@ -136,10 +139,28 @@ class LaptopSource implements Source {
         setState(this.id, { status: 'unpaired', live: false, error: 'This laptop is no longer paired.' });
         return null;
       }
-      const nearby = useNearby.getState().byId[this.serverId];
-      const fromMdns = nearby?.addresses.map((host) => ({ host, port: nearby.port })) ?? [];
+      const fromMdns = Object.values(useNearby.getState().byId)
+        .filter((n) => n.serverId === this.serverId && (!this.shareId || n.shareId === this.shareId))
+        .flatMap((n) => n.addresses.map((host) => ({ host, port: n.port })));
       try {
-        const { candidate } = await firstReachable(candidatesFor(laptop, fromMdns), this.serverId);
+        let { candidate, ping } = await firstReachable(
+          candidatesFor(laptop, fromMdns, this.shareId),
+          this.serverId,
+          4000,
+          this.shareId,
+        );
+        if (this.shareId && ping.share_id && ping.share_id !== this.shareId) {
+          // Another share on the laptop answered; it knows where this one runs.
+          const moved = ping.shares?.find((s) => s.share_id === this.shareId);
+          if (!moved) throw new Error('Not sharing');
+          ({ candidate, ping } = await firstReachable(
+            [{ host: candidate.host, port: moved.port }],
+            this.serverId,
+            4000,
+            this.shareId,
+          ));
+          if (ping.share_id !== this.shareId) throw new Error('Not sharing');
+        }
         const client = new Client(candidate.host, candidate.port, token);
         const info = await client.info();
         if (this.disposed) return null;
@@ -153,6 +174,7 @@ class LaptopSource implements Source {
           host: info.host,
           lastSeen: Date.now(),
         });
+        useStore.getState().seeShares(this.serverId, sharesIn(ping));
         if (this.disposed) return null;
         this.client = client;
         setState(this.id, { status: 'online', via: tailscale ? 'Tailscale' : 'Wi-Fi', error: undefined });
@@ -534,7 +556,8 @@ export function getSource(id: string): Source | null {
   const [prefix, rest] = [id.slice(0, 2), id.slice(2)];
   const s = useStore.getState();
   let source: Source | null = null;
-  if (prefix === 'l-' && s.laptops[rest]) source = new LaptopSource(id, rest);
+  const laptop = prefix === 'l-' ? parseLaptopSourceId(rest) : null;
+  if (laptop && s.laptops[laptop.serverId]) source = new LaptopSource(id, laptop.serverId, laptop.shareId);
   else if (prefix === 'f-' && s.folders[rest]) source = new FolderSource(id, rest);
   else if (prefix === 'd-' && s.files[rest]) source = new FileSource(id, rest);
   if (source) sources.set(id, source);

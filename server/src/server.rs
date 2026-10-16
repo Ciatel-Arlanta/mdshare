@@ -22,6 +22,7 @@ use rand::RngExt;
 
 use crate::devices::{Registry, random_string};
 use crate::net::Addr;
+use crate::running::{self, ShareInfo};
 use crate::share::{Share, ShareKind};
 
 pub const API_VERSION: u32 = 1;
@@ -177,17 +178,32 @@ struct Ping<'a> {
     server_id: &'a str,
     name: &'a str,
     host: &'a str,
+    share_id: &'a str,
+    kind: ShareKind,
+    port: u16,
+    /// Other shares running on this laptop right now.
+    shares: Vec<ShareInfo>,
 }
 
 /// Unauthenticated probe so the app can find which address answers.
 async fn ping(State(state): State<AppRef>) -> impl IntoResponse {
     state.last_activity.store(now_secs(), Ordering::Relaxed);
+    let port = state.port;
+    let shares = tokio::task::spawn_blocking(move || {
+        running::dir().map_or_else(Vec::new, |d| running::others(&d, port))
+    })
+    .await
+    .unwrap_or_default();
     Json(Ping {
         app: "mdshare",
         version: API_VERSION,
         server_id: &state.server_id,
         name: &state.share.name,
         host: &state.hostname,
+        share_id: &state.share.id,
+        kind: state.share.kind,
+        port: state.port,
+        shares,
     })
     .into_response()
 }
@@ -207,6 +223,7 @@ struct PairResponse<'a> {
     token: String,
     device_id: String,
     server_id: &'a str,
+    share_id: &'a str,
     host: &'a str,
     port: u16,
     addrs: &'a [Addr],
@@ -255,6 +272,7 @@ async fn pair(State(state): State<AppRef>, Json(req): Json<PairRequest>) -> Resp
             token,
             device_id,
             server_id: &state.server_id,
+            share_id: &state.share.id,
             host: &state.hostname,
             port: state.port,
             addrs: &state.addrs,
@@ -274,6 +292,7 @@ struct Info<'a> {
     app: &'static str,
     version: u32,
     server_id: &'a str,
+    share_id: &'a str,
     name: &'a str,
     kind: ShareKind,
     /// For a single-file share, the path of that file.
@@ -289,6 +308,7 @@ async fn info(State(state): State<AppRef>) -> impl IntoResponse {
         app: "mdshare",
         version: API_VERSION,
         server_id: &state.server_id,
+        share_id: &state.share.id,
         name: &state.share.name,
         kind: state.share.kind,
         entry: state.share.entry.as_deref(),

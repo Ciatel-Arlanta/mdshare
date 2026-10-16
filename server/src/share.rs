@@ -4,7 +4,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const MARKDOWN_EXTS: &[&str] = &["md", "markdown", "mdx", "mdown", "mkd", "mkdn"];
 const IMAGE_EXTS: &[&str] = &[
@@ -30,7 +31,7 @@ const MAX_DEPTH: usize = 16;
 const MAX_ENTRIES: usize = 20_000;
 const MAX_SEARCH_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShareKind {
     File,
@@ -45,6 +46,9 @@ pub struct Share {
     /// For a single-file share, the file name relative to `root`.
     pub entry: Option<String>,
     pub name: String,
+    /// Stable across runs (derived from the shared path), so the app can tell
+    /// several shares from the same laptop apart.
+    pub id: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -133,11 +137,13 @@ impl Share {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| full.display().to_string())
         });
+        let id = hex::encode(&Sha256::digest(full.to_string_lossy().as_bytes())[..6]);
         Ok(Self {
             root,
             kind,
             entry,
             name,
+            id,
         })
     }
 
