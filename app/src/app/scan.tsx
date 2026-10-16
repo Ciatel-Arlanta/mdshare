@@ -21,23 +21,25 @@ export default function Scan() {
 
   if (!permission.granted) {
     return (
-      <SafeAreaView className="flex-1 bg-background">
-        <VStack space="lg" className="flex-1 justify-center p-8">
-          <Heading size="xl">Camera access</Heading>
-          <Text className="text-muted-foreground">
-            The camera is only used to read the pairing QR code. You can also pair by typing the 6-digit code instead.
-          </Text>
-          <Button className="h-12 rounded-xl" onPress={requestPermission}>
-            <ButtonText>Allow camera</ButtonText>
-          </Button>
-          <Button variant="outline" className="h-12 rounded-xl" onPress={() => router.replace('/pair')}>
-            <ButtonText>Enter code instead</ButtonText>
-          </Button>
-          <Button variant="ghost" onPress={() => router.back()}>
-            <ButtonText>Cancel</ButtonText>
-          </Button>
-        </VStack>
-      </SafeAreaView>
+      <View className="flex-1 bg-background">
+        <SafeAreaView style={styles.fill}>
+          <VStack space="lg" className="w-full max-w-md flex-1 justify-center self-center px-8 pb-8 pt-16">
+            <Heading size="xl">Camera access</Heading>
+            <Text className="text-muted-foreground">
+              The camera is only used to read the pairing QR code. You can also pair by typing the 6-digit code instead.
+            </Text>
+            <Button className="h-12 rounded-xl" onPress={requestPermission}>
+              <ButtonText>Allow camera</ButtonText>
+            </Button>
+            <Button variant="outline" className="h-12 rounded-xl" onPress={() => router.replace('/pair')}>
+              <ButtonText>Enter code instead</ButtonText>
+            </Button>
+            <Button variant="ghost" onPress={() => router.back()}>
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+          </VStack>
+        </SafeAreaView>
+      </View>
     );
   }
 
@@ -58,7 +60,7 @@ export default function Scan() {
           router.replace({ pathname: '/link', params: { url: data } });
         }}
       />
-      <SafeAreaView style={StyleSheet.absoluteFill} className="justify-between">
+      <SafeAreaView style={styles.overlay}>
         <View className="items-end p-4">
           <Button
             variant="secondary"
@@ -80,3 +82,8 @@ export default function Scan() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+  overlay: { ...StyleSheet.absoluteFill, justifyContent: 'space-between' },
+});
