@@ -3,7 +3,7 @@
 //! config directory, so a phone that reaches any of them learns about all.
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,61 +58,88 @@ pub fn others(dir: &Path, own_port: u16) -> Vec<ShareInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for path in entries.flatten().map(|e| e.path()) {
-        let Some(entry) = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Entry>(&b).ok())
-        else {
-            continue;
-        };
-        if entry.info.port == own_port {
-            continue;
-        }
-        let ip = match entry.bind {
-            IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
-            IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
-            ip => ip,
-        };
-        if answers_as(SocketAddr::new(ip, entry.info.port), &entry.info.share_id) {
-            out.push(entry.info);
-        } else {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
+    let candidates: Vec<(PathBuf, Entry)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter_map(|path| {
+            let entry = serde_json::from_slice::<Entry>(&std::fs::read(&path).ok()?).ok()?;
+            (entry.info.port != own_port).then_some((path, entry))
+        })
+        .collect();
+    // Check them all at once so a few dead entries don't add up.
+    let mut out: Vec<ShareInfo> = std::thread::scope(|scope| {
+        let checks: Vec<_> = candidates
+            .into_iter()
+            .map(|(path, entry)| scope.spawn(move || (path, check(&entry), entry.info)))
+            .collect();
+        checks
+            .into_iter()
+            .filter_map(|c| c.join().ok())
+            .filter_map(|(path, state, info)| match state {
+                State::Running => Some(info),
+                State::Gone => {
+                    let _ = std::fs::remove_file(&path);
+                    None
+                }
+                // Busy or slow: leave it for next time.
+                State::Unknown => None,
+            })
+            .collect()
+    });
     out.sort_by_key(|s| s.port);
     out
 }
 
-/// Whether `addr` is still that share, not some other program that took the
-/// port after mdshare was killed.
-fn answers_as(addr: SocketAddr, share_id: &str) -> bool {
-    let timeout = Duration::from_millis(500);
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else {
-        return false;
+enum State {
+    Running,
+    /// Nothing listens there, or another program took the port after
+    /// mdshare was killed.
+    Gone,
+    Unknown,
+}
+
+fn check(entry: &Entry) -> State {
+    // If we can take the port, nothing listens there. (Connecting to a closed
+    // port on Windows times out rather than failing fast.)
+    if TcpListener::bind(SocketAddr::new(entry.bind, entry.info.port)).is_ok() {
+        return State::Gone;
+    }
+    let ip = match entry.bind {
+        IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
     };
+    let timeout = Duration::from_millis(500);
+    let mut stream =
+        match TcpStream::connect_timeout(&SocketAddr::new(ip, entry.info.port), timeout) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return State::Gone,
+            Err(_) => return State::Unknown,
+        };
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
     if stream
-        .write_all(
-            b"GET /api/ping HTTP/1.0
-Host: localhost
-
-",
-        )
+        .write_all(b"GET /api/ping HTTP/1.0\r\nHost: localhost\r\n\r\n")
         .is_err()
     {
-        return false;
+        return State::Unknown;
     }
     let mut body = Vec::new();
-    let _ = stream.take(16 * 1024).read_to_end(&mut body);
-    String::from_utf8_lossy(&body).contains(&format!("\"share_id\":\"{share_id}\""))
+    let read = stream.take(16 * 1024).read_to_end(&mut body);
+    let text = String::from_utf8_lossy(&body);
+    if text.contains(&format!("\"share_id\":\"{}\"", entry.info.share_id)) {
+        State::Running
+    } else if read.is_ok() && !text.is_empty() {
+        // A complete answer from something else.
+        State::Gone
+    } else {
+        State::Unknown
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
 
     fn info(port: u16) -> ShareInfo {
         ShareInfo {
@@ -130,12 +157,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let _ = conn.read(&mut buf);
                 let body = format!("{{\"app\":\"mdshare\",\"share_id\":\"{share_id}\"}}");
-                let _ = write!(
-                    conn,
-                    "HTTP/1.0 200 OK
-
-{body}"
-                );
+                let _ = write!(conn, "HTTP/1.0 200 OK\r\n\r\n{body}");
             }
         });
     }
