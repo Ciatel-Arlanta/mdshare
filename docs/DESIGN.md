@@ -16,6 +16,7 @@ mdshare devices              # list paired phones
 mdshare unpair <id> | --all  # revoke a phone
 ```
 
+- Each run serves one share on its own port (7878, or the next free one), so a laptop can share several files and folders at once. Every share has a stable `share_id` derived from its path, and registers itself in `%APPDATA%\mdshare\running\<port>.json` while it runs.
 - Prints a QR code and a 6-digit pair code. Stops on Ctrl+C, when the `--for` deadline passes, or after `--idle` with no phone connected.
 - `--keep-awake` stops idle sleep while the share is active (Windows `SetThreadExecutionState`). It doesn't override the lid: closing the lid sleeps the laptop (Modern Standby suspends the server and Tailscale) unless the lid action is "Do nothing". See [TAILSCALE.md](TAILSCALE.md).
 - Stack: `axum` + `tokio`, `notify` (file watching), `mdns-sd` (LAN discovery), `qrcode`.
@@ -27,7 +28,7 @@ Every request except `ping` and `pair` needs a token, sent as `Authorization: Be
 
 | Endpoint | |
 |---|---|
-| `GET /api/ping` | `{app, version, server_id, name, host}`. Unauthenticated, so the app can tell which address answers and that it's the right laptop. |
+| `GET /api/ping` | `{app, version, server_id, name, host, share_id, kind, port, shares}`. Unauthenticated, so the app can tell which address answers and that it's the right laptop. `shares` lists the laptop's other running shares (`{share_id, name, kind, port}`), so reaching any one of them finds the rest. |
 | `POST /api/pair` | `{secret}` (from the QR code) or `{code}` (6 digits), plus `device_name`. Returns this phone's own token, plus `server_id` and every address. |
 | `GET /api/info` | Share name, kind (`file`/`folder`), entry file, host, port, addresses, expiry. |
 | `GET /api/tree` | Nested tree of markdown files plus images, `.txt` and `.pdf`. Skips `.git`, `node_modules`, `target` and similar. |
@@ -48,11 +49,11 @@ Every request except `ping` and `pair` needs a token, sent as `Authorization: Be
 
 | Channel | How the phone finds the laptop |
 |---|---|
-| B: same Wi-Fi | The laptop advertises `_mdshare._tcp` over mDNS with `id=<server_id>` in the TXT record. A paired phone matches the id, so it finds the laptop even after DHCP gives it a new address. Unpaired laptops show up as "tap to pair". |
+| B: same Wi-Fi | Each share advertises `_mdshare._tcp` over mDNS with `id=<server_id>` and `share=<share_id>` in the TXT record. A paired phone matches the id, so it finds the laptop even after DHCP gives it a new address. Unpaired laptops show up as "tap to pair". |
 | Last known address | The address that worked last time is tried next. |
 | A: Tailscale | mDNS doesn't cross a tailnet, so pairing saves every address: LAN IP, Tailscale `100.x` IP and MagicDNS name (from `tailscale status --json`). Away from home the Tailscale address answers. |
 
-The app probes all candidates in parallel with `/api/ping`, takes the first that answers with the right `server_id`, then refreshes its saved addresses from `/api/info`. The server binds to `0.0.0.0`, so it answers on both the LAN and the Tailscale interface.
+The app probes all candidates in parallel with `/api/ping`, takes the first that answers with the right `server_id` (preferring the wanted share; if a different share answers, its `shares` list gives the wanted one's current port), then refreshes its saved addresses from `/api/info`. The server binds to `0.0.0.0`, so it answers on both the LAN and the Tailscale interface.
 
 QR link format: `mdshare://pair?id=<server_id>&s=<secret>&p=<port>&h=<host1>,<host2>,…`. Scanning it with the system camera also opens the app.
 
@@ -63,7 +64,7 @@ QR link format: `mdshare://pair?id=<server_id>&s=<secret>&p=<port>&h=<host1>,<ho
 - Discovery: `react-native-zeroconf`. Live reload: `react-native-sse`. QR: `expo-camera`.
 - Rendering: `react-native-webview` loads a reader page bundled into the APK's assets (`app/reader`). The page uses markdown-it (footnotes, task lists, `==mark==`, GitHub alerts, front matter), highlight.js, KaTeX and Mermaid (loaded only when a diagram appears), and sanitises everything with DOMPurify under a strict CSP. Every block carries its source line, so the reading position survives edits and live reloads.
 - Features:
-  - Home: continue reading, paired laptops with live status, nearby unpaired laptops, phone folders and files
+  - Home: a row per share on each paired laptop with live status (long-press a stopped share to forget it), nearby unpaired laptops, phone folders and files
   - Browse: file tree, filter by name, full-text search, two-pane layout on tablets
   - Reader: light/sepia/dark/black themes, font, size, line width and spacing, table of contents, find in page, progress bar, copy buttons on code blocks, links between `.md` files open in the app
   - Offline copies of every tree and file you've opened, used automatically when the laptop is unreachable
