@@ -68,27 +68,27 @@ function shareRows(laptop: Laptop, reach?: Reach): ShareRowModel[] {
   const via = reach?.via ?? 'Wi-Fi';
   const running = online ? (reach?.shares ?? []) : [];
   const known = Object.values(laptop.shares ?? {});
-  if (!running.length && !known.length) {
-    // A laptop on an older mdshare, or not seen since pairing.
+  const rows: ShareRowModel[] = [];
+  if (online ? !running.length : !known.length) {
+    // A laptop on an older mdshare (no share ids), or not seen since pairing.
     const shareName = reach?.shareName ?? laptop.shareName;
-    return [
-      {
-        key: laptop.serverId,
-        sourceId: laptopSourceId(laptop.serverId),
-        title: online && shareName ? shareName : laptop.host,
-        subtitle: online
-          ? `Sharing from ${laptop.host} · ${via}`
-          : shareName
-            ? `Not sharing · saved copy of “${shareName}”`
-            : 'Not sharing right now',
-        online,
-      },
-    ];
+    rows.push({
+      key: laptop.serverId,
+      sourceId: laptopSourceId(laptop.serverId),
+      title: online && shareName ? shareName : laptop.host,
+      subtitle: online
+        ? `Sharing from ${laptop.host} · ${via}`
+        : shareName
+          ? `Not sharing · saved copy of “${shareName}”`
+          : 'Not sharing right now',
+      online,
+    });
   }
   const stopped = known
     .filter((k) => !running.some((r) => r.share_id === k.id))
     .sort((a, b) => b.lastSeen - a.lastSeen);
   return [
+    ...rows,
     ...running.map((r) => ({
       key: `${laptop.serverId}~${r.share_id}`,
       sourceId: laptopSourceId(laptop.serverId, r.share_id),
@@ -139,16 +139,14 @@ function ShareRow({ row }: { row: ShareRowModel }) {
   );
 }
 
-/** An unpaired laptop on the Wi-Fi, with every share it's running. */
-function NearbyRow({ shares }: { shares: Nearby[] }) {
-  const n = shares[0];
-  const names = shares.map((s) => s.shareName).join(', ');
+// One row per share, not per laptop: each share has its own pair code.
+function NearbyRow({ n }: { n: Nearby }) {
   return (
     <Pressable
       onPress={() =>
         router.push({
           pathname: '/pair',
-          params: { serverId: n.serverId, name: n.host, share: names, hosts: n.addresses.join(','), port: String(n.port) },
+          params: { serverId: n.serverId, name: n.host, share: n.shareName, hosts: n.addresses.join(','), port: String(n.port) },
         })
       }
       className="rounded-2xl border border-dashed border-primary/50 p-4 data-[active=true]:bg-accent"
@@ -159,7 +157,7 @@ function NearbyRow({ shares }: { shares: Nearby[] }) {
         </View>
         <VStack className="flex-1">
           <Text className="font-semibold" numberOfLines={1}>
-            {names}
+            {n.shareName}
           </Text>
           <Text size="sm" className="text-muted-foreground" numberOfLines={1}>
             {`On ${n.host} · tap to pair`}
@@ -209,11 +207,7 @@ export default function Home() {
   const reach = useReachability();
 
   const paired = Object.values(laptops).sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
-  const unpairedNearby = Object.values(
-    Object.values(nearby)
-      .filter((n) => !laptops[n.serverId])
-      .reduce<Record<string, Nearby[]>>((acc, n) => ({ ...acc, [n.serverId]: [...(acc[n.serverId] ?? []), n] }), {}),
-  );
+  const unpairedNearby = Object.entries(nearby).filter(([, n]) => !laptops[n.serverId]);
   const localFolders = Object.values(folders).sort((a, b) => b.addedAt - a.addedAt);
   const localFiles = Object.values(files).sort((a, b) => b.addedAt - a.addedAt).slice(0, 5);
 
@@ -264,8 +258,8 @@ export default function Home() {
           {paired.flatMap((l) => shareRows(l, reach[l.serverId])).map((row) => (
             <ShareRow key={row.key} row={row} />
           ))}
-          {unpairedNearby.map((shares) => (
-            <NearbyRow key={shares[0].serverId} shares={shares} />
+          {unpairedNearby.map(([key, n]) => (
+            <NearbyRow key={key} n={n} />
           ))}
           {paired.length === 0 && unpairedNearby.length === 0 && (
             <View className="rounded-2xl border border-border bg-card p-5">

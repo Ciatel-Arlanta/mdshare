@@ -181,19 +181,28 @@ struct Ping<'a> {
     share_id: &'a str,
     kind: ShareKind,
     port: u16,
-    /// Other shares running on this laptop right now.
-    shares: Vec<ShareInfo>,
+    /// Other shares running on this laptop right now. Only for paired phones
+    /// (token presented), since this endpoint is open to anyone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shares: Option<Vec<ShareInfo>>,
 }
 
 /// Unauthenticated probe so the app can find which address answers.
-async fn ping(State(state): State<AppRef>) -> impl IntoResponse {
+async fn ping(State(state): State<AppRef>, req: Request) -> impl IntoResponse {
     state.last_activity.store(now_secs(), Ordering::Relaxed);
-    let port = state.port;
-    let shares = tokio::task::spawn_blocking(move || {
-        running::dir().map_or_else(Vec::new, |d| running::others(&d, port))
-    })
-    .await
-    .unwrap_or_default();
+    let paired =
+        presented_token(req.headers(), req.uri().query()).is_some_and(|t| state.authorized(t));
+    let shares = if paired {
+        let port = state.port;
+        let found = tokio::task::spawn_blocking(move || {
+            running::dir().map_or_else(Vec::new, |d| running::others(&d, port))
+        })
+        .await
+        .unwrap_or_default();
+        Some(found)
+    } else {
+        None
+    };
     Json(Ping {
         app: "mdshare",
         version: API_VERSION,

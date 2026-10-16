@@ -8,7 +8,7 @@ import { useCallback, useState } from 'react';
 
 import { useNearby } from './discovery';
 import { candidatesFor, firstReachable, sharesIn } from './net';
-import { useStore } from './store';
+import { tokens, useStore } from './store';
 import type { ShareInfo } from './types';
 
 export interface Reach {
@@ -43,7 +43,15 @@ export function useReachability(): Record<string, Reach> {
       let cancelled = false;
       const probe = () => {
         for (const laptop of Object.values(useStore.getState().laptops)) {
-          firstReachable(candidatesFor(laptop), laptop.serverId, 3500)
+          tokens
+            .get(laptop.serverId)
+            .then((token) =>
+              firstReachable(candidatesFor(laptop, { anyPort: true }), {
+                serverId: laptop.serverId,
+                token: token ?? undefined,
+                ms: 3500,
+              }),
+            )
             .then(({ candidate, ping }) => {
               if (cancelled) return;
               const shares = sharesIn(ping);
