@@ -21,6 +21,8 @@ export interface Reach {
 }
 
 const POLL_MS = 20000;
+/** Scan mdshare's default ports every this many polls. */
+const SCAN_EVERY = 5;
 
 const TAILSCALE = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./;
 
@@ -41,17 +43,20 @@ export function useReachability(): Record<string, Reach> {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      let round = 0;
       const probe = () => {
+        // Any running share lists the others, so known ports usually do. A
+        // share started on a new port while none of those run is found by
+        // scanning the default ports, which is done less often.
+        const scan = round++ % SCAN_EVERY === 0;
         for (const laptop of Object.values(useStore.getState().laptops)) {
           tokens
             .get(laptop.serverId)
-            .then((token) =>
-              firstReachable(candidatesFor(laptop, { anyPort: true }), {
-                serverId: laptop.serverId,
-                token: token ?? undefined,
-                ms: 3500,
-              }),
-            )
+            .then((token) => {
+              const opts = { serverId: laptop.serverId, token: token ?? undefined, ms: 3500 };
+              const known = firstReachable(candidatesFor(laptop), opts);
+              return scan ? known.catch(() => firstReachable(candidatesFor(laptop, { anyPort: true }), opts)) : known;
+            })
             .then(({ candidate, ping }) => {
               if (cancelled) return;
               const shares = sharesIn(ping);
