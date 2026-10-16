@@ -143,22 +143,16 @@ class LaptopSource implements Source {
         .filter((n) => n.serverId === this.serverId && (!this.shareId || n.shareId === this.shareId))
         .flatMap((n) => n.addresses.map((host) => ({ host, port: n.port })));
       try {
+        const probe = { serverId: this.serverId, shareId: this.shareId, token };
         let { candidate, ping } = await firstReachable(
-          candidatesFor(laptop, fromMdns, this.shareId),
-          this.serverId,
-          4000,
-          this.shareId,
+          candidatesFor(laptop, { nearby: fromMdns, shareId: this.shareId }),
+          probe,
         );
         if (this.shareId && ping.share_id && ping.share_id !== this.shareId) {
           // Another share on the laptop answered; it knows where this one runs.
           const moved = ping.shares?.find((s) => s.share_id === this.shareId);
           if (!moved) throw new Error('Not sharing');
-          ({ candidate, ping } = await firstReachable(
-            [{ host: candidate.host, port: moved.port }],
-            this.serverId,
-            4000,
-            this.shareId,
-          ));
+          ({ candidate, ping } = await firstReachable([{ host: candidate.host, port: moved.port }], probe));
           if (ping.share_id !== this.shareId) throw new Error('Not sharing');
         }
         const client = new Client(candidate.host, candidate.port, token);
@@ -564,9 +558,14 @@ export function getSource(id: string): Source | null {
   return source;
 }
 
-export function forgetSource(id: string) {
+/** Closes a source's connection; the next `getSource` starts afresh. */
+export function resetSource(id: string) {
   sources.get(id)?.dispose();
   sources.delete(id);
+}
+
+export function forgetSource(id: string) {
+  resetSource(id);
   cache.clear(id);
   useSourceStates.setState((s) => {
     const { [id]: _, ...rest } = s;

@@ -1,7 +1,7 @@
 import * as Device from 'expo-device';
 
 import { type Candidate, firstReachable, pair, sharesIn } from './net';
-import { getSource, forgetSource } from './sources';
+import { getSource, forgetSource, resetSource } from './sources';
 import { laptopSourceId, laptopSourceIds, tokens, useStore } from './store';
 import type { PairResponse, Ping } from './types';
 
@@ -26,8 +26,9 @@ async function save(res: PairResponse, used: Candidate, ping: Ping): Promise<str
     shares: store.laptops[res.server_id]?.shares,
   });
   store.seeShares(res.server_id, sharesIn(ping));
-  // Drop any stale connection from an earlier pairing with this laptop.
-  for (const old of laptopSourceIds(useStore.getState().laptops[res.server_id])) forgetSource(old);
+  // Drop any stale connection from an earlier pairing with this laptop; its
+  // saved copies stay.
+  for (const old of laptopSourceIds(useStore.getState().laptops[res.server_id])) resetSource(old);
   const id = laptopSourceId(res.server_id, res.share_id);
   getSource(id);
   return id;
@@ -42,8 +43,7 @@ export async function pairWithSecret(
 ): Promise<string> {
   const { candidate, ping } = await firstReachable(
     hosts.map((host) => ({ host, port })),
-    serverId,
-    5000,
+    { serverId, ms: 5000 },
   );
   const res = await pair(candidate, { secret, device_name: deviceName() });
   return save(res, candidate, ping);
@@ -51,7 +51,7 @@ export async function pairWithSecret(
 
 /** Pairs using the 6-digit code shown in the laptop's terminal. */
 export async function pairWithCode(candidates: Candidate[], code: string, serverId?: string): Promise<string> {
-  const { candidate, ping } = await firstReachable(candidates, serverId, 5000);
+  const { candidate, ping } = await firstReachable(candidates, { serverId, ms: 5000 });
   const res = await pair(candidate, { code, device_name: deviceName() });
   return save(res, candidate, ping);
 }

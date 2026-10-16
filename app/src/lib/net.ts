@@ -36,8 +36,10 @@ async function errorFrom(res: Response): Promise<HttpError> {
   return new HttpError(res.status, message);
 }
 
-export async function ping(host: string, port: number, ms = 3000): Promise<Ping> {
-  const res = await fetchWithTimeout(`${baseUrl(host, port)}/api/ping`, {}, ms);
+/** With a paired phone's token, the answer also lists the laptop's other shares. */
+export async function ping(host: string, port: number, ms = 3000, token?: string): Promise<Ping> {
+  const init = token ? { headers: { authorization: `Bearer ${token}` } } : {};
+  const res = await fetchWithTimeout(`${baseUrl(host, port)}/api/ping`, init, ms);
   if (!res.ok) throw await errorFrom(res);
   const body = (await res.json()) as Ping;
   if (body.app !== 'mdshare') throw new Error('Not an mdshare server');
@@ -49,6 +51,16 @@ export interface Candidate {
   port: number;
 }
 
+export interface ProbeOptions {
+  /** Only accept this laptop. */
+  serverId?: string;
+  /** Prefer this share on it. */
+  shareId?: string;
+  /** This phone's token, so answers list the laptop's other shares. */
+  token?: string;
+  ms?: number;
+}
+
 /**
  * Probes all candidates at once and resolves with the first that answers as
  * the expected laptop. LAN addresses usually win; Tailscale ones answer when
@@ -58,9 +70,7 @@ export interface Candidate {
  */
 export function firstReachable(
   candidates: Candidate[],
-  serverId?: string,
-  ms = 4000,
-  shareId?: string,
+  { serverId, shareId, token, ms = 4000 }: ProbeOptions = {},
 ): Promise<{ candidate: Candidate; ping: Ping }> {
   const unique = candidates.filter(
     (c, i) => candidates.findIndex((d) => d.host === c.host && d.port === c.port) === i,
@@ -80,11 +90,18 @@ export function firstReachable(
       else reject(new Error("Couldn't reach the laptop"));
     };
     for (const candidate of unique) {
-      ping(candidate.host, candidate.port, ms)
+      ping(candidate.host, candidate.port, ms, token)
         .then((p) => {
           if (done) return;
           if (serverId && p.server_id !== serverId) throw new Error('A different laptop answered');
           if (shareId && p.share_id && p.share_id !== shareId) {
+            if (p.shares) {
+              // It knows whether (and where) the wanted share runs; don't
+              // wait for the other addresses to time out.
+              done = true;
+              resolve({ candidate, ping: p });
+              return;
+            }
             fallback ??= { candidate, ping: p };
             settle();
             return;
@@ -205,12 +222,22 @@ export class Client {
   }
 }
 
-/** Addresses to try for a paired laptop (or one share on it), best first. */
-export function candidatesFor(laptop: Laptop, nearby?: Candidate[], shareId?: string): Candidate[] {
+/** Ports mdshare picks from when none is given (see server/src/main.rs). */
+const DEFAULT_PORTS = Array.from({ length: 10 }, (_, i) => 7878 + i);
+
+/**
+ * Addresses to try for a paired laptop (or one share on it), best first.
+ * `anyPort` adds the ports a share started since we last looked may be on.
+ */
+export function candidatesFor(
+  laptop: Laptop,
+  { nearby, shareId, anyPort }: { nearby?: Candidate[]; shareId?: string; anyPort?: boolean } = {},
+): Candidate[] {
   const ports = [
     shareId ? laptop.shares?.[shareId]?.port : undefined,
     laptop.port,
     ...Object.values(laptop.shares ?? {}).map((s) => s.port),
+    ...(anyPort ? DEFAULT_PORTS : []),
   ].filter((p, i, all): p is number => !!p && all.indexOf(p) === i);
   const hosts = laptop.lastHost ? [laptop.lastHost, ...laptop.hosts] : laptop.hosts;
   const list: Candidate[] = [...(nearby ?? [])];

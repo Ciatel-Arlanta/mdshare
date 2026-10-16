@@ -24,7 +24,9 @@ pub fn advertise(state: &AppState, addrs: &[Addr]) -> anyhow::Result<Advert> {
     anyhow::ensure!(!ips.is_empty(), "no LAN address to advertise on");
 
     let daemon = ServiceDaemon::new()?;
-    let instance = truncate(&format!("{share_name} on {hostname}"), 63);
+    // Unique per port: two shares can have the same name.
+    let suffix = format!(" ({port})");
+    let instance = truncate(&format!("{share_name} on {hostname}"), 63 - suffix.len()) + &suffix;
     let kind = match state.share.kind {
         ShareKind::File => "file",
         ShareKind::Folder => "folder",

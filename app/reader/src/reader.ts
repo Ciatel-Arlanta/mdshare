@@ -354,13 +354,16 @@ function reportScroll() {
     scrollFrame = 0;
     const progress = readProgress();
     const line = topPosition().line;
-    const percent = Math.round(progress * 1000);
+    // The bar only shows whole percents; don't message the app for less.
+    const percent = Math.round(progress * 100);
     if (line === lastSent.line && percent === lastSent.percent) return;
     lastSent = { line, percent };
     post({ type: 'scroll', line, progress });
   });
 }
 window.addEventListener('scroll', reportScroll, { passive: true });
+// Images, diagrams and new prefs change the height without a scroll event.
+new ResizeObserver(reportScroll).observe(doc);
 
 // ---------------------------------------------------------------------------
 // Preferences.

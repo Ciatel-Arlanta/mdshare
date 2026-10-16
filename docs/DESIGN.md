@@ -28,7 +28,7 @@ Every request except `ping` and `pair` needs a token, sent as `Authorization: Be
 
 | Endpoint | |
 |---|---|
-| `GET /api/ping` | `{app, version, server_id, name, host, share_id, kind, port, shares}`. Unauthenticated, so the app can tell which address answers and that it's the right laptop. `shares` lists the laptop's other running shares (`{share_id, name, kind, port}`), so reaching any one of them finds the rest. |
+| `GET /api/ping` | `{app, version, server_id, name, host, share_id, kind, port, shares}`. Unauthenticated, so the app can tell which address answers and that it's the right laptop. With a paired phone's token, `shares` also lists the laptop's other running shares (`{share_id, name, kind, port}`), so reaching any one of them finds the rest; without one it's left out. |
 | `POST /api/pair` | `{secret}` (from the QR code) or `{code}` (6 digits), plus `device_name`. Returns this phone's own token, plus `server_id` and every address. |
 | `GET /api/info` | Share name, kind (`file`/`folder`), entry file, host, port, addresses, expiry. |
 | `GET /api/tree` | Nested tree of markdown files plus images, `.txt` and `.pdf`. Skips `.git`, `node_modules`, `target` and similar. |
