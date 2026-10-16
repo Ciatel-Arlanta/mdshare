@@ -2,7 +2,7 @@
 
 import EventSource from 'react-native-sse';
 
-import type { ChangeEvent, Info, Laptop, PairResponse, Ping, SearchHit, TreeNode } from './types';
+import type { ChangeEvent, Info, Laptop, PairResponse, Ping, SearchHit, ShareInfo, TreeNode } from './types';
 
 export class HttpError extends Error {
   constructor(
@@ -52,12 +52,15 @@ export interface Candidate {
 /**
  * Probes all candidates at once and resolves with the first that answers as
  * the expected laptop. LAN addresses usually win; Tailscale ones answer when
- * the phone is away from home.
+ * the phone is away from home. With `shareId`, an answer from that share wins;
+ * failing that, any share on the laptop (its `shares` say where the wanted one
+ * runs now).
  */
 export function firstReachable(
   candidates: Candidate[],
   serverId?: string,
   ms = 4000,
+  shareId?: string,
 ): Promise<{ candidate: Candidate; ping: Ping }> {
   const unique = candidates.filter(
     (c, i) => candidates.findIndex((d) => d.host === c.host && d.port === c.port) === i,
@@ -69,18 +72,27 @@ export function firstReachable(
     }
     let pending = unique.length;
     let done = false;
+    let fallback: { candidate: Candidate; ping: Ping } | null = null;
+    const settle = () => {
+      pending -= 1;
+      if (pending || done) return;
+      if (fallback) resolve(fallback);
+      else reject(new Error("Couldn't reach the laptop"));
+    };
     for (const candidate of unique) {
       ping(candidate.host, candidate.port, ms)
         .then((p) => {
           if (done) return;
           if (serverId && p.server_id !== serverId) throw new Error('A different laptop answered');
+          if (shareId && p.share_id && p.share_id !== shareId) {
+            fallback ??= { candidate, ping: p };
+            settle();
+            return;
+          }
           done = true;
           resolve({ candidate, ping: p });
         })
-        .catch(() => {
-          pending -= 1;
-          if (!pending && !done) reject(new Error("Couldn't reach the laptop"));
-        });
+        .catch(settle);
     }
   });
 }
@@ -193,10 +205,22 @@ export class Client {
   }
 }
 
-/** Addresses to try for a paired laptop, best first. */
-export function candidatesFor(laptop: Laptop, nearby?: Candidate[]): Candidate[] {
+/** Addresses to try for a paired laptop (or one share on it), best first. */
+export function candidatesFor(laptop: Laptop, nearby?: Candidate[], shareId?: string): Candidate[] {
+  const ports = [
+    shareId ? laptop.shares?.[shareId]?.port : undefined,
+    laptop.port,
+    ...Object.values(laptop.shares ?? {}).map((s) => s.port),
+  ].filter((p, i, all): p is number => !!p && all.indexOf(p) === i);
+  const hosts = laptop.lastHost ? [laptop.lastHost, ...laptop.hosts] : laptop.hosts;
   const list: Candidate[] = [...(nearby ?? [])];
-  if (laptop.lastHost) list.push({ host: laptop.lastHost, port: laptop.port });
-  for (const host of laptop.hosts) list.push({ host, port: laptop.port });
+  for (const port of ports) for (const host of hosts) list.push({ host, port });
   return list;
+}
+
+/** The shares a ping says are running: the one that answered and its siblings. */
+export function sharesIn(p: Ping): ShareInfo[] {
+  const own: ShareInfo[] =
+    p.share_id && p.port ? [{ share_id: p.share_id, name: p.name, kind: p.kind ?? 'folder', port: p.port }] : [];
+  return [...own, ...(p.shares ?? [])];
 }

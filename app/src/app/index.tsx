@@ -18,16 +18,16 @@ import { Heading } from '@/components/ui/heading';
 import { HStack } from '@/components/ui/hstack';
 import { Icon } from '@/components/ui/icon';
 import { Pressable } from '@/components/ui/pressable';
-import { Progress, ProgressFilledTrack } from '@/components/ui/progress';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 import { type Nearby, useNearby } from '@/lib/discovery';
 import { pickFile, pickFolder } from '@/lib/local';
 import { stripExtension, basename } from '@/lib/paths';
 import { type Reach, useReachability } from '@/lib/reachability';
+import { forgetShare } from '@/lib/pairing';
 import { forgetSource } from '@/lib/sources';
 import { fileSourceId, folderSourceId, laptopSourceId, useStore } from '@/lib/store';
-import type { Laptop, Recent } from '@/lib/types';
+import type { Laptop } from '@/lib/types';
 
 function openSource(sourceId: string) {
   router.push({ pathname: '/source/[id]', params: { id: sourceId } });
@@ -52,12 +52,70 @@ function StatusDot({ on }: { on: boolean }) {
   return <View className={`h-2 w-2 rounded-full ${on ? 'bg-success' : 'bg-muted-foreground/40'}`} />;
 }
 
-function LaptopRow({ laptop, reach }: { laptop: Laptop; reach?: Reach }) {
+interface ShareRowModel {
+  key: string;
+  sourceId: string;
+  title: string;
+  subtitle: string;
+  online: boolean;
+  /** Set for shares that aren't running, so they can be forgotten. */
+  onForget?(): void;
+}
+
+/** One row per share on each paired laptop, running ones first. */
+function shareRows(laptop: Laptop, reach?: Reach): ShareRowModel[] {
   const online = !!reach?.online;
-  const shareName = reach?.shareName ?? laptop.shareName;
+  const via = reach?.via ?? 'Wi-Fi';
+  const running = online ? (reach?.shares ?? []) : [];
+  const known = Object.values(laptop.shares ?? {});
+  if (!running.length && !known.length) {
+    // A laptop on an older mdshare, or not seen since pairing.
+    const shareName = reach?.shareName ?? laptop.shareName;
+    return [
+      {
+        key: laptop.serverId,
+        sourceId: laptopSourceId(laptop.serverId),
+        title: online && shareName ? shareName : laptop.host,
+        subtitle: online
+          ? `Sharing from ${laptop.host} · ${via}`
+          : shareName
+            ? `Not sharing · saved copy of “${shareName}”`
+            : 'Not sharing right now',
+        online,
+      },
+    ];
+  }
+  const stopped = known
+    .filter((k) => !running.some((r) => r.share_id === k.id))
+    .sort((a, b) => b.lastSeen - a.lastSeen);
+  return [
+    ...running.map((r) => ({
+      key: `${laptop.serverId}~${r.share_id}`,
+      sourceId: laptopSourceId(laptop.serverId, r.share_id),
+      title: r.name,
+      subtitle: `Sharing from ${laptop.host} · ${via}`,
+      online: true,
+    })),
+    ...stopped.map((k) => ({
+      key: `${laptop.serverId}~${k.id}`,
+      sourceId: laptopSourceId(laptop.serverId, k.id),
+      title: k.name,
+      subtitle: `Not sharing · saved copy from ${laptop.host}`,
+      online: false,
+      onForget: () =>
+        Alert.alert(`Forget “${k.name}”?`, 'Its saved copies on this phone are deleted. The laptop stays paired.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Forget', style: 'destructive', onPress: () => forgetShare(laptop.serverId, k.id) },
+        ]),
+    })),
+  ];
+}
+
+function ShareRow({ row }: { row: ShareRowModel }) {
   return (
     <Pressable
-      onPress={() => openSource(laptopSourceId(laptop.serverId))}
+      onPress={() => openSource(row.sourceId)}
+      onLongPress={row.onForget}
       className="rounded-2xl border border-border bg-card p-4 data-[active=true]:bg-muted"
     >
       <HStack space="md" className="items-center">
@@ -66,16 +124,12 @@ function LaptopRow({ laptop, reach }: { laptop: Laptop; reach?: Reach }) {
         </View>
         <VStack className="flex-1">
           <Text className="font-semibold" numberOfLines={1}>
-            {online && shareName ? shareName : laptop.host}
+            {row.title}
           </Text>
           <HStack space="xs" className="items-center">
-            <StatusDot on={online} />
+            <StatusDot on={row.online} />
             <Text size="sm" className="text-muted-foreground" numberOfLines={1}>
-              {online
-                ? `Sharing from ${laptop.host} · ${reach?.via ?? 'Wi-Fi'}`
-                : shareName
-                  ? `Not sharing · saved copy of “${shareName}”`
-                  : 'Not sharing right now'}
+              {row.subtitle}
             </Text>
           </HStack>
         </VStack>
@@ -85,13 +139,16 @@ function LaptopRow({ laptop, reach }: { laptop: Laptop; reach?: Reach }) {
   );
 }
 
-function NearbyRow({ n }: { n: Nearby }) {
+/** An unpaired laptop on the Wi-Fi, with every share it's running. */
+function NearbyRow({ shares }: { shares: Nearby[] }) {
+  const n = shares[0];
+  const names = shares.map((s) => s.shareName).join(', ');
   return (
     <Pressable
       onPress={() =>
         router.push({
           pathname: '/pair',
-          params: { serverId: n.serverId, name: n.host, share: n.shareName, hosts: n.addresses.join(','), port: String(n.port) },
+          params: { serverId: n.serverId, name: n.host, share: names, hosts: n.addresses.join(','), port: String(n.port) },
         })
       }
       className="rounded-2xl border border-dashed border-primary/50 p-4 data-[active=true]:bg-accent"
@@ -102,7 +159,7 @@ function NearbyRow({ n }: { n: Nearby }) {
         </View>
         <VStack className="flex-1">
           <Text className="font-semibold" numberOfLines={1}>
-            {n.shareName}
+            {names}
           </Text>
           <Text size="sm" className="text-muted-foreground" numberOfLines={1}>
             {`On ${n.host} · tap to pair`}
@@ -112,28 +169,6 @@ function NearbyRow({ n }: { n: Nearby }) {
           Pair
         </Text>
       </HStack>
-    </Pressable>
-  );
-}
-
-function RecentCard({ recent, sourceName }: { recent: Recent; sourceName: string }) {
-  return (
-    <Pressable
-      onPress={() => openDoc(recent.sourceId, recent.path)}
-      className="mr-3 w-56 rounded-2xl border border-border bg-card p-4 data-[active=true]:bg-muted"
-    >
-      <VStack space="xs" className="flex-1">
-        <Icon as={FileText} className="mb-1 text-primary" />
-        <Text className="font-semibold" numberOfLines={2}>
-          {recent.title}
-        </Text>
-        <Text size="sm" className="text-muted-foreground" numberOfLines={1}>
-          {sourceName}
-        </Text>
-      </VStack>
-      <Progress value={Math.round(recent.progress * 100)} className="mt-3 h-1 bg-muted">
-        <ProgressFilledTrack className="h-1 bg-primary" />
-      </Progress>
     </Pressable>
   );
 }
@@ -170,27 +205,17 @@ export default function Home() {
   const laptops = useStore((s) => s.laptops);
   const folders = useStore((s) => s.folders);
   const files = useStore((s) => s.files);
-  const recents = useStore((s) => s.recents);
   const nearby = useNearby((s) => s.byId);
   const reach = useReachability();
 
   const paired = Object.values(laptops).sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
-  const unpairedNearby = Object.values(nearby).filter((n) => !laptops[n.serverId]);
+  const unpairedNearby = Object.values(
+    Object.values(nearby)
+      .filter((n) => !laptops[n.serverId])
+      .reduce<Record<string, Nearby[]>>((acc, n) => ({ ...acc, [n.serverId]: [...(acc[n.serverId] ?? []), n] }), {}),
+  );
   const localFolders = Object.values(folders).sort((a, b) => b.addedAt - a.addedAt);
   const localFiles = Object.values(files).sort((a, b) => b.addedAt - a.addedAt).slice(0, 5);
-
-  const sourceName = (id: string) => {
-    const key = id.slice(2);
-    if (id.startsWith('l-')) return laptops[key]?.shareName ?? laptops[key]?.host ?? 'Laptop';
-    if (id.startsWith('f-')) return folders[key]?.name ?? 'Folder';
-    return 'On this phone';
-  };
-  const liveRecents = recents
-    .filter((r) => {
-      const key = r.sourceId.slice(2);
-      return r.sourceId.startsWith('l-') ? laptops[key] : r.sourceId.startsWith('f-') ? folders[key] : files[key];
-    })
-    .slice(0, 8);
 
   const removeLocal = (kind: 'folder' | 'file', id: string, name: string) =>
     Alert.alert(`Remove “${name}”?`, 'It stays on your phone; it just leaves this list.', [
@@ -234,24 +259,13 @@ export default function Home() {
           </Button>
         </HStack>
 
-        {liveRecents.length > 0 && (
-          <>
-            <SectionTitle>Continue reading</SectionTitle>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} className="-mx-4" contentContainerClassName="px-4">
-              {liveRecents.map((r) => (
-                <RecentCard key={`${r.sourceId}:${r.path}`} recent={r} sourceName={sourceName(r.sourceId)} />
-              ))}
-            </ScrollView>
-          </>
-        )}
-
         <SectionTitle>Laptops</SectionTitle>
         <VStack space="sm">
-          {paired.map((l) => (
-            <LaptopRow key={l.serverId} laptop={l} reach={reach[l.serverId]} />
+          {paired.flatMap((l) => shareRows(l, reach[l.serverId])).map((row) => (
+            <ShareRow key={row.key} row={row} />
           ))}
-          {unpairedNearby.map((n) => (
-            <NearbyRow key={n.serverId} n={n} />
+          {unpairedNearby.map((shares) => (
+            <NearbyRow key={shares[0].serverId} shares={shares} />
           ))}
           {paired.length === 0 && unpairedNearby.length === 0 && (
             <View className="rounded-2xl border border-border bg-card p-5">

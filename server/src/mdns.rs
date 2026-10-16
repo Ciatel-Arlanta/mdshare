@@ -34,6 +34,8 @@ pub fn advertise(state: &AppState, addrs: &[Addr]) -> anyhow::Result<Advert> {
         ("v", version.as_str()),
         // Lets a paired phone recognise this laptop whatever its IP is today.
         ("id", state.server_id.as_str()),
+        // Tells apart several shares running on the same laptop.
+        ("share", state.share.id.as_str()),
         ("name", share_name.as_str()),
         ("host", hostname.as_str()),
         ("kind", kind),

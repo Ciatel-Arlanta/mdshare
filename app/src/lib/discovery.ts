@@ -1,6 +1,7 @@
 // LAN discovery of running shares (mDNS `_mdshare._tcp`). Paired laptops are
 // matched by the permanent server id in the TXT record, so the app finds them
-// even after their Wi-Fi address changed.
+// even after their Wi-Fi address changed. One laptop can run several shares,
+// so entries are keyed by share, not by laptop.
 
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
@@ -9,6 +10,8 @@ import { create } from 'zustand';
 
 export interface Nearby {
   serverId: string;
+  /** Missing from laptops running an older mdshare. */
+  shareId?: string;
   /** Name of the share being served right now. */
   shareName: string;
   /** Laptop hostname. */
@@ -22,9 +25,12 @@ export interface Nearby {
 }
 
 interface NearbyState {
+  /** Keyed by `nearbyKey`. */
   byId: Record<string, Nearby>;
   scanning: boolean;
 }
+
+const nearbyKey = (n: Nearby) => `${n.serverId}~${n.shareId ?? n.port}`;
 
 export const useNearby = create<NearbyState>(() => ({ byId: {}, scanning: false }));
 
@@ -36,6 +42,7 @@ function fromService(s: Service): Nearby | null {
   if (!ipv4.length) return null;
   return {
     serverId,
+    shareId: txt.share || undefined,
     shareName: txt.name || s.name,
     host: txt.host || s.host.replace(/\.local\.?$/, ''),
     kind: txt.kind === 'file' ? 'file' : 'folder',
@@ -60,7 +67,7 @@ function start() {
   zeroconf.on('stop', () => useNearby.setState({ scanning: false }));
   zeroconf.on('resolved', (service) => {
     const n = fromService(service);
-    if (n) useNearby.setState((s) => ({ byId: { ...s.byId, [n.serverId]: n } }));
+    if (n) useNearby.setState((s) => ({ byId: { ...s.byId, [nearbyKey(n)]: n } }));
   });
   zeroconf.on('remove', (name) => {
     useNearby.setState((s) => {

@@ -2,6 +2,7 @@ mod awake;
 mod devices;
 mod mdns;
 mod net;
+mod running;
 mod server;
 mod share;
 mod shell;
@@ -293,6 +294,15 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
+    let _running = running::dir().and_then(|dir| {
+        let info = running::ShareInfo {
+            share_id: state.share.id.clone(),
+            name: state.share.name.clone(),
+            kind: state.share.kind,
+            port,
+        };
+        running::register(&dir, info, cli.bind)
+    });
     let _awake = if cli.keep_awake {
         let guard = awake::KeepAwake::start();
         if guard.is_none() {

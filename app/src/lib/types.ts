@@ -8,18 +8,33 @@ export interface Addr {
   kind: AddrKind;
 }
 
+/** A share running on a laptop. Each `mdshare` process serves one, on its own port. */
+export interface ShareInfo {
+  share_id: string;
+  name: string;
+  kind: 'file' | 'folder';
+  port: number;
+}
+
 export interface Ping {
   app: 'mdshare';
   version: number;
   server_id: string;
   name: string;
   host: string;
+  // Missing from laptops running an older mdshare.
+  share_id?: string;
+  kind?: 'file' | 'folder';
+  port?: number;
+  /** The laptop's other shares running right now. */
+  shares?: ShareInfo[];
 }
 
 export interface Info {
   app: 'mdshare';
   version: number;
   server_id: string;
+  share_id?: string;
   name: string;
   kind: 'file' | 'folder';
   entry: string | null;
@@ -33,6 +48,7 @@ export interface PairResponse {
   token: string;
   device_id: string;
   server_id: string;
+  share_id?: string;
   host: string;
   port: number;
   addrs: Addr[];
@@ -69,9 +85,20 @@ export interface Laptop {
   lastHost?: string;
   /** Name of the last share seen from this laptop. */
   shareName?: string;
+  /** Every share seen from this laptop, by share id. */
+  shares?: Record<string, KnownShare>;
   deviceId: string;
   pairedAt: number;
   lastSeen?: number;
+}
+
+export interface KnownShare {
+  id: string;
+  name: string;
+  kind: 'file' | 'folder';
+  /** Port it ran on last time; it can change when shares start in another order. */
+  port: number;
+  lastSeen: number;
 }
 
 /** A folder on this phone opened through the system folder picker. */

@@ -3,7 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import type { Laptop, LocalFile, LocalFolder, Recent } from './types';
+import type { Laptop, LocalFile, LocalFolder, Recent, ShareInfo } from './types';
 
 export type ReaderTheme = 'auto' | 'light' | 'sepia' | 'dark' | 'black';
 export type Appearance = 'system' | 'light' | 'dark';
@@ -45,6 +45,9 @@ interface State {
   upsertLaptop(laptop: Laptop): void;
   updateLaptop(serverId: string, patch: Partial<Laptop>): void;
   removeLaptop(serverId: string): void;
+  /** Records shares seen running on a paired laptop. */
+  seeShares(serverId: string, shares: ShareInfo[]): void;
+  removeShare(serverId: string, shareId: string): void;
   addFolder(folder: LocalFolder): void;
   removeFolder(id: string): void;
   addFile(file: LocalFile): void;
@@ -77,8 +80,28 @@ export const useStore = create<State>()(
       removeLaptop: (serverId) =>
         set((s) => {
           const { [serverId]: _, ...laptops } = s.laptops;
-          const sourceId = laptopSourceId(serverId);
-          return { laptops, recents: s.recents.filter((r) => r.sourceId !== sourceId) };
+          return { laptops, recents: s.recents.filter((r) => !isLaptopSource(r.sourceId, serverId)) };
+        }),
+      seeShares: (serverId, seen) =>
+        set((s) => {
+          const cur = s.laptops[serverId];
+          if (!cur || !seen.length) return {};
+          const shares = { ...cur.shares };
+          for (const sh of seen) {
+            shares[sh.share_id] = { id: sh.share_id, name: sh.name, kind: sh.kind, port: sh.port, lastSeen: Date.now() };
+          }
+          return { laptops: { ...s.laptops, [serverId]: { ...cur, shares } } };
+        }),
+      removeShare: (serverId, shareId) =>
+        set((s) => {
+          const cur = s.laptops[serverId];
+          if (!cur?.shares?.[shareId]) return {};
+          const { [shareId]: _, ...shares } = cur.shares;
+          const sourceId = laptopSourceId(serverId, shareId);
+          return {
+            laptops: { ...s.laptops, [serverId]: { ...cur, shares } },
+            recents: s.recents.filter((r) => r.sourceId !== sourceId),
+          };
         }),
       addFolder: (folder) => set((s) => ({ folders: { ...s.folders, [folder.id]: folder } })),
       removeFolder: (id) =>
@@ -126,7 +149,25 @@ export const useStore = create<State>()(
 );
 
 // Source ids: one namespace for laptops, phone folders and single files.
-export const laptopSourceId = (serverId: string) => `l-${serverId}`;
+// A laptop source is one share on it; without a share id it's whichever share
+// the laptop runs (laptops on an older mdshare don't report share ids).
+export const laptopSourceId = (serverId: string, shareId?: string) =>
+  shareId ? `l-${serverId}~${shareId}` : `l-${serverId}`;
+
+/** `rest` is a laptop source id without its `l-` prefix. */
+export function parseLaptopSourceId(rest: string): { serverId: string; shareId?: string } {
+  const [serverId, shareId] = rest.split('~');
+  return { serverId, shareId: shareId || undefined };
+}
+
+export const isLaptopSource = (sourceId: string, serverId: string) =>
+  sourceId === laptopSourceId(serverId) || sourceId.startsWith(`${laptopSourceId(serverId)}~`);
+
+/** Every source id this laptop may have been opened under. */
+export const laptopSourceIds = (laptop: Laptop) => [
+  laptopSourceId(laptop.serverId),
+  ...Object.keys(laptop.shares ?? {}).map((id) => laptopSourceId(laptop.serverId, id)),
+];
 export const folderSourceId = (id: string) => `f-${id}`;
 export const fileSourceId = (id: string) => `d-${id}`;
 
