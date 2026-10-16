@@ -211,6 +211,7 @@ function render(opts: RenderOptions) {
   }));
   const words = (doc.textContent ?? '').split(/\s+/).filter(Boolean).length;
   post({ type: 'rendered', toc, words });
+  lastSent = { line: -1, percent: -1 };
   reportScroll();
 }
 
@@ -334,14 +335,30 @@ function scrollToId(id: string) {
   }
 }
 
-let scrollTimer = 0;
+// Progress runs from the top of the document to the point where its last line
+// reaches the bottom of the screen; the trailing padding under #doc doesn't count.
+function readProgress() {
+  const scroller = document.scrollingElement ?? document.documentElement;
+  const last = doc.lastElementChild;
+  const end = last ? last.getBoundingClientRect().bottom + scroller.scrollTop : 0;
+  const view = window.visualViewport?.height ?? window.innerHeight;
+  const max = end - view;
+  return max > 0 ? Math.min(1, Math.max(0, scroller.scrollTop / max)) : 1;
+}
+
+let scrollFrame = 0;
+let lastSent = { line: -1, percent: -1 };
 function reportScroll() {
-  window.clearTimeout(scrollTimer);
-  scrollTimer = window.setTimeout(() => {
-    const max = document.documentElement.scrollHeight - window.innerHeight;
-    const progress = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 1;
-    post({ type: 'scroll', line: topPosition().line, progress });
-  }, 150);
+  if (scrollFrame) return;
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = 0;
+    const progress = readProgress();
+    const line = topPosition().line;
+    const percent = Math.round(progress * 1000);
+    if (line === lastSent.line && percent === lastSent.percent) return;
+    lastSent = { line, percent };
+    post({ type: 'scroll', line, progress });
+  });
 }
 window.addEventListener('scroll', reportScroll, { passive: true });
 
