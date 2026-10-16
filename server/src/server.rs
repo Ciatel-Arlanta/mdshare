@@ -189,10 +189,12 @@ struct Ping<'a> {
 
 /// Unauthenticated probe so the app can find which address answers.
 async fn ping(State(state): State<AppRef>, req: Request) -> impl IntoResponse {
-    state.last_activity.store(now_secs(), Ordering::Relaxed);
     let paired =
         presented_token(req.headers(), req.uri().query()).is_some_and(|t| state.authorized(t));
+    // Only a paired phone counts as activity for --idle: other shares on this
+    // laptop ping too (see running::others) and would keep each other alive.
     let shares = if paired {
+        state.last_activity.store(now_secs(), Ordering::Relaxed);
         let port = state.port;
         let found = tokio::task::spawn_blocking(move || {
             running::dir().map_or_else(Vec::new, |d| running::others(&d, port))

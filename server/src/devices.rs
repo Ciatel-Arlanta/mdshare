@@ -85,11 +85,62 @@ impl Registry {
         reg.reload(&mut cache);
         if cache.data.server_id.is_empty() {
             cache.data.server_id = random_string(16);
-            reg.write(&mut cache);
+            match reg.create(&cache.data) {
+                Ok(()) => cache.mtime = reg.mtime(),
+                // Another share started at the same moment created the file
+                // first; use its id so both are the same laptop.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    match reg.wait_for_id() {
+                        Some(data) => {
+                            cache.data = data;
+                            cache.mtime = reg.mtime();
+                        }
+                        None => reg.write(&mut cache),
+                    }
+                }
+                Err(_) => reg.write(&mut cache),
+            }
         }
         reg.server_id = cache.data.server_id.clone();
         drop(cache);
         reg
+    }
+
+    /// Writes the file only if it doesn't exist yet, so two processes starting
+    /// at once on a fresh laptop can't each make up a server id.
+    fn create(&self, data: &Data) -> std::io::Result<()> {
+        use std::io::Write;
+        let file = self.file.as_ref().ok_or(std::io::ErrorKind::NotFound)?;
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(file)?;
+        f.write_all(serde_json::to_string_pretty(data).unwrap().as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+
+    /// The file exists but may still be being written by the process that
+    /// created it; give it a moment.
+    fn wait_for_id(&self) -> Option<Data> {
+        let file = self.file.as_ref()?;
+        (0..40).find_map(|_| {
+            let data = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Data>(&s).ok())
+                .filter(|d| !d.server_id.is_empty());
+            if data.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            data
+        })
     }
 
     fn mtime(&self) -> Option<SystemTime> {
@@ -250,6 +301,22 @@ mod tests {
         assert_eq!(reg.authorize(&token), None);
         reg.save();
         assert_eq!(reg2.authorize(&token), None);
+        std::fs::remove_file(file).ok();
+    }
+
+    #[test]
+    fn shares_started_together_agree_on_server_id() {
+        let file = std::env::temp_dir().join(format!("mdshare-reg-{}.json", random_string(6)));
+        let ids: Vec<String> = (0..4)
+            .map(|_| {
+                let file = file.clone();
+                std::thread::spawn(move || Registry::load_from(Some(file)).server_id())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        assert!(ids.iter().all(|id| id == &ids[0]), "{ids:?}");
         std::fs::remove_file(file).ok();
     }
 }
